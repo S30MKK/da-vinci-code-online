@@ -1,0 +1,10 @@
+{
+  "name": "da-vinci-code-online",
+  "version": "1.0.0",
+  "private": true,
+  "description": "达芬奇密码 多人联机数字版（零依赖 Node.js）",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  }
+}

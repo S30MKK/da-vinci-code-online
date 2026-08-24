@@ -1,0 +1,7 @@
+# Railway 配置（推到 GitHub 后可在 Railway 一键部署）
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "node server.js"
+healthcheckPath = "/"

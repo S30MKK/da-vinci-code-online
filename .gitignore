@@ -1,0 +1,5 @@
+node_modules/
+stats.json
+stats.json.tmp
+.superpowers/
+*.log

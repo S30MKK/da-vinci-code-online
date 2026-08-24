@@ -1,0 +1,13 @@
+{
+  "name": "达芬奇密码",
+  "short_name": "达芬奇密码",
+  "description": "达芬奇密码 多人联机数字版",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#16202c",
+  "theme_color": "#1e2a38",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

@@ -1,0 +1,12 @@
+# Render Blueprint（推到 GitHub 后可在 Render 一键部署）
+services:
+  - type: web
+    name: da-vinci-code-online
+    runtime: node
+    plan: free
+    buildCommand: ""
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: 3000
