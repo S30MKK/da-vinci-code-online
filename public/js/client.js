@@ -20,7 +20,10 @@ const App = {
   replayIdx: 0,
   replayAutoTimer: null,
   reconnectTimer: null,
-  curGameId: null
+  curGameId: null,
+  wantStatsModal: false,   // 用户主动点击查战绩：即使同名也要弹窗
+  pendingStatsQuery: null, // 正在查询的昵称（用于超时提示）
+  pendingStatsTimer: null
 };
 
 /* ===================== 工具 ===================== */
@@ -97,22 +100,6 @@ function canAct() {
 }
 
 /* ===================== WebSocket ===================== */
-function updateDebugBadge() {
-  try {
-    const el = document.getElementById('debug-badge');
-    if (!el) return;
-    const st = App.state;
-    const parts = ['v2.9'];
-    if (st) {
-      parts.push('phase=' + st.phase, 'turn=' + st.currentTurn, 'act=' + st.pendingAction, 'you=' + (st.you.seat != null ? st.you.seat : '观战'));
-    }
-    parts.push('modal=' + (document.getElementById('modal-root').children.length));
-    const roEl = document.getElementById('results-overlay');
-    parts.push('ro=' + (roEl ? (getComputedStyle(roEl).display === 'none' ? '0' : 'SHOW') : 'x'));
-    parts.push('arranged=' + App.arranged);
-    el.textContent = parts.join(' | ');
-  } catch (e) { /* ignore */ }
-}
 function reportClientError(kind, msg) {
   try {
     fetch('/api/log', {
@@ -190,7 +177,14 @@ function handleMessageInner(msg) {
       if (App.view !== 'replay') render();
       break;
     case 'stats':
-      if (msg.nickname && msg.nickname !== App.nickname) {
+      clearTimeout(App.pendingStatsTimer);
+      App.pendingStatsTimer = null;
+      App.pendingStatsQuery = null;
+      if (App.wantStatsModal) {
+        // 用户主动点击查战绩：即使是同名玩家也弹窗
+        App.wantStatsModal = false;
+        showStatsModal(msg.nickname, msg.stats);
+      } else if (msg.nickname && msg.nickname !== App.nickname) {
         showStatsModal(msg.nickname, msg.stats);
       } else {
         App.myStats = msg;
@@ -245,7 +239,6 @@ function showView(name) {
 function render() {
   const st = App.state;
   if (!st) return;
-  updateDebugBadge();
   try {
     if (st.phase === 'lobby') {
       showView('room');
@@ -276,7 +269,7 @@ function renderRoom() {
     } else {
       const tags = [];
       if (s.isHost) tags.push('<span class="tag host">房主</span>');
-      if (s.isBot) tags.push('<span class="tag">机器人</span>');
+      if (s.isBot && !st.disguise) tags.push('<span class="tag">机器人</span>');
       if (!s.connected) tags.push('<span class="tag">掉线</span>');
       item.innerHTML = `<div class="dot ${s.connected ? '' : 'off'}"></div><div class="name">${esc(s.nickname)}${tags.join('')}</div>`;
       if (st.you.seat === st.hostSeat && s.isBot && st.phase === 'lobby') {
@@ -292,6 +285,8 @@ function renderRoom() {
   const isHost = st.you.seat === st.hostSeat;
   $('invite-row').hidden = st.you.isSpectator || st.you.seat == null;
   $('host-controls').hidden = !isHost || st.phase !== 'lobby';
+  $('chk-full-bots').checked = !!st.fullBots;
+  $('chk-disguise').checked = !!st.disguise;
   $('spec-controls').hidden = !isHost;
   $('btn-view-all').classList.toggle('primary', st.spectatorView === 'all');
   $('btn-view-public').classList.toggle('primary', st.spectatorView === 'public');
@@ -347,7 +342,7 @@ function tileEl(t, onClick) {
 function seatTags(s, isMe) {
   const tags = [];
   if (s.isHost) tags.push('<span class="tag host">房主</span>');
-  if (s.isBot) tags.push('<span class="tag">机器人</span>');
+  if (s.isBot && !(App.state && App.state.disguise)) tags.push('<span class="tag">机器人</span>');
   if (isMe) tags.push('<span class="tag">我</span>');
   if (s.eliminated) tags.push('<span class="tag">出局</span>');
   if (!s.connected && !s.isBot) tags.push('<span class="tag">掉线</span>');
@@ -965,8 +960,23 @@ function renderOnlineModal() {
 
 function viewPlayerStats(nick) {
   if (!nick) return;
+  if (!App.ws || App.ws.readyState !== WebSocket.OPEN) {
+    showToast('连接已断开，正在重连…请稍后再试', 3000);
+    return;
+  }
+  App.wantStatsModal = true;
+  App.pendingStatsQuery = nick;
   showToast('正在查询 ' + nick + ' 的战绩…');
   send({ type: 'get_stats', nickname: nick });
+  clearTimeout(App.pendingStatsTimer);
+  App.pendingStatsTimer = setTimeout(() => {
+    if (App.pendingStatsQuery === nick) {
+      App.wantStatsModal = false;
+      App.pendingStatsQuery = null;
+      App.pendingStatsTimer = null;
+      showToast('查询超时：请检查网络后重试', 3000);
+    }
+  }, 4000);
 }
 
 function showStatsModal(nickname, stats) {
@@ -1253,6 +1263,8 @@ function init() {
   $('btn-copy-code').onclick = () => copyRoomCode();
   $('room-code').addEventListener('click', () => copyRoomCode());
   $('game-room-code').addEventListener('click', () => copyRoomCode());
+  $('chk-full-bots').addEventListener('change', (e) => send({ type: 'set_full_bots', enabled: e.target.checked }));
+  $('chk-disguise').addEventListener('change', (e) => send({ type: 'set_disguise', enabled: e.target.checked }));
   $('btn-add-bot').onclick = () => send({ type: 'add_bot' });
   $('btn-start').onclick = () => send({ type: 'start_game' });
   $('btn-view-all').onclick = () => send({ type: 'set_spectator_view', view: 'all' });

@@ -404,6 +404,67 @@ test('观战：观战者视角与房主切换', { timeout: 30000 }, async () => 
   a.close();
   c.close();
 });
+test('完全体机器人开关：仅房主可切换，默认关闭', { timeout: 30000 }, async () => {
+  const host = track(new WsTestClient(server.port));
+  const guest = track(new WsTestClient(server.port));
+  await host.connect();
+  await guest.connect();
+  host.send({ type: 'create_room', nickname: '房主甲' });
+  const rs = await host.nextMessage((m) => m.type === 'state');
+  const code = rs.code;
+  assert.strictEqual(rs.fullBots, false, '默认关闭完全体机器人');
+  guest.send({ type: 'join_room', nickname: '客人乙', code });
+  await guest.nextMessage((m) => m.type === 'state' && m.you.seat != null);
+  // 非房主切换无效
+  guest.send({ type: 'set_full_bots', enabled: true });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(S._rooms.get(code).fullBots, false, '非房主不能切换完全体机器人');
+  // 房主开启
+  host.send({ type: 'set_full_bots', enabled: true });
+  const stOn = await host.nextMessage((m) => m.type === 'state' && m.fullBots === true);
+  assert.strictEqual(stOn.fullBots, true, '房主开启后状态广播');
+  assert.strictEqual(S._rooms.get(code).fullBots, true, '房主开启后房间状态更新');
+  // 房主关闭
+  host.send({ type: 'set_full_bots', enabled: false });
+  const stOff = await host.nextMessage((m) => m.type === 'state' && m.fullBots === false);
+  assert.strictEqual(stOff.fullBots, false, '房主关闭后状态广播');
+  assert.strictEqual(S._rooms.get(code).fullBots, false, '房主可关闭完全体机器人');
+  host.close();
+  guest.close();
+});
+
+test('伪装开关：仅房主可切换，机器人使用玩家昵称', { timeout: 30000 }, async () => {
+  const host = track(new WsTestClient(server.port));
+  const guest = track(new WsTestClient(server.port));
+  await host.connect();
+  await guest.connect();
+  host.send({ type: 'create_room', nickname: '房主丙' });
+  const rs = await host.nextMessage((m) => m.type === 'state');
+  const code = rs.code;
+  assert.strictEqual(rs.disguise, false, '默认关闭伪装');
+  guest.send({ type: 'join_room', nickname: '客人丁', code });
+  await guest.nextMessage((m) => m.type === 'state' && m.you.seat != null);
+  // 非房主切换无效
+  guest.send({ type: 'set_disguise', enabled: true });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(S._rooms.get(code).disguise, false, '非房主不能切换伪装');
+  // 房主开启伪装后添加机器人 → 玩家昵称（非“机器人”前缀）
+  host.send({ type: 'set_disguise', enabled: true });
+  await host.nextMessage((m) => m.type === 'state' && m.disguise === true);
+  host.send({ type: 'add_bot' });
+  const stBot = await host.nextMessage((m) => m.type === 'state' && m.seats.filter(Boolean).length === 3);
+  const botSeat = stBot.seats.find((s) => s && s.isBot);
+  assert.ok(botSeat, '应有机器人座位');
+  assert.ok(botSeat.nickname && !botSeat.nickname.startsWith('机器人'), '伪装模式下机器人使用玩家昵称，实际=' + botSeat.nickname);
+  // 关闭伪装 → 机器人恢复“机器人X”昵称
+  host.send({ type: 'set_disguise', enabled: false });
+  const stOff = await host.nextMessage((m) => m.type === 'state' && m.disguise === false);
+  const botOff = stOff.seats.find((s) => s && s.isBot);
+  assert.ok(botOff.nickname.startsWith('机器人'), '关闭伪装后恢复机器人昵称，实际=' + botOff.nickname);
+  host.close();
+  guest.close();
+});
+
 test('机器人：添加机器人后自动参与完整对局', { timeout: 120000 }, async () => {
   const a = track(new WsTestClient(server.port));
   await a.connect();

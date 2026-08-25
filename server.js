@@ -25,6 +25,13 @@ const RECONNECT_GRACE_MS = 90 * 1000;   // 断线保留座位时长
 const INVITE_TTL_MS = 30 * 1000;      // 邀请待处理有效期
 const pendingInvites = new Map();      // 被邀请昵称 -> { fromNick, fromClient, code, at }
 const BOT_DELAY_MS = 700;               // 机器人行动间隔
+const BOT_MISTAKE_RATE = 0.3;            // 机器人失误率：以该概率不选全局最优（弱化完美必中）
+const BOT_JOKER_MIN_P = 0.5;             // 只有概率不低于该值时，机器人才会考虑猜 Joker
+const BOT_CONTINUE_MIN_P = 0.5;           // 猜中后，只有存在概率不低于该值的下一手才继续猜
+const BOT_CONTINUE_MIN_P_FULL = 0.3;          // 完全体机器人：连猜阈值（回调到 30%）
+const BOT_DISGUISE_MIN_DELAY_MS = 1200;     // 伪装模式：猜牌前最短思考时间
+const BOT_DISGUISE_MAX_DELAY_MS = 3000;     // 伪装模式：猜牌前最长思考时间
+const BOT_HUMAN_NAMES = ['小明','阿伟','老王','小红','小丽','大壮','老张','桃子','阿杰','小美','壮壮','聪聪','乐乐','佳佳','阿凯','小柔']; // 伪装模式玩家昵称池
 const MAX_REPLAYS_PER_ROOM = 10;
 const MAX_REPLAYS_GLOBAL = 500;
 const MAX_RECENT_PER_PLAYER = 20;
@@ -359,6 +366,8 @@ function createRoom() {
     hostSeat: null,
     phase: 'lobby',            // lobby | arranging | playing | ended
     spectatorView: 'all',      // all | public
+    fullBots: false,            // 完全体机器人：严格按概率行动、不失误（房主可切换）
+    disguise: false,            // 伪装：机器人用玩家昵称，并在猜牌前模拟人类思考时间
     drawPile: [],
     blackPile: [],
     whitePile: [],
@@ -441,6 +450,8 @@ function stateFor(room, client) {
     currentTurn: room.currentTurn,
     pendingAction: room.pendingAction,
     spectatorView: room.spectatorView,
+    fullBots: room.fullBots,
+    disguise: room.disguise,
     you: seat ? { isSpectator: false, seat: seat.index } : { isSpectator: true },
     drawPileSize: (room.blackPile ? room.blackPile.length : 0) + (room.whitePile ? room.whitePile.length : 0),
     blackPileSize: room.blackPile ? room.blackPile.length : 0,
@@ -878,6 +889,11 @@ function estimateGuessProbability(room, guesser, target, pos, color, number, isJ
  * ------------------------------------------------------------------- */
 
 function scheduleBot(room, seat) {
+  const act = room.pendingAction;
+  // 伪装模式：猜牌（含继续猜）前模拟人类思考时间
+  const think = room.disguise && (act === 'guess' || act === 'continue')
+    ? BOT_DISGUISE_MIN_DELAY_MS + Math.random() * (BOT_DISGUISE_MAX_DELAY_MS - BOT_DISGUISE_MIN_DELAY_MS)
+    : BOT_DELAY_MS;
   const t = setTimeout(() => {
     if (room.phase !== 'playing' || room.currentTurn !== seat.index) return;
     if (seat.eliminated) return;
@@ -887,7 +903,7 @@ function scheduleBot(room, seat) {
     else if (room.pendingAction === 'reveal') botReveal(room, seat);
     else if (room.pendingAction === 'discard') botDiscard(room, seat);
     else if (room.pendingAction === 'continue') botContinue(room, seat);
-  }, BOT_DELAY_MS);
+  }, think);
   room.timers.add(t);
   t.unref && t.unref();
 }
@@ -921,6 +937,9 @@ function botPlace(room, seat) {
 
 function botGuess(room, seat) {
   let best = { p: -1 };
+  const candidates = []; // 概率 > 0 的合理猜测（供失误率随机挑选）
+  const mistakeRate = room.fullBots ? 0 : BOT_MISTAKE_RATE; // 完全体机器人不故意失误
+  const jokerMinP = room.fullBots ? 0 : BOT_JOKER_MIN_P;    // 完全体机器人严格按概率，Joker 也参与比较
   for (const target of room.seats) {
     if (!target || target === seat || target.eliminated) continue;
     for (let pos = 0; pos < target.tiles.length; pos++) {
@@ -928,19 +947,17 @@ function botGuess(room, seat) {
       for (const color of ['b', 'w']) {
         for (let number = 0; number <= 11; number++) {
           const p = estimateGuessProbability(room, seat, target, pos, color, number);
-          if (p > best.p) {
-            best = { p, target: target.index, position: pos, color, number };
-          }
+          if (p > 0) candidates.push({ p, target: target.index, position: pos, color, number });
+          if (p > best.p) best = { p, target: target.index, position: pos, color, number };
         }
       }
-      // 也考虑猜 Joker（横线）
+      // 也考虑猜 Joker（横线），但只在概率足够高时（避免无谓赌博）
       const pJoker = estimateGuessProbability(room, seat, target, pos, null, null, true);
-      if (pJoker > best.p) {
-        best = { p: pJoker, target: target.index, position: pos, joker: true };
-      }
+      if (pJoker >= jokerMinP) candidates.push({ p: pJoker, target: target.index, position: pos, joker: true });
+      if (pJoker >= jokerMinP && pJoker > best.p) best = { p: pJoker, target: target.index, position: pos, joker: true };
     }
   }
-  if (best.target == null) {
+  if (candidates.length === 0 || best.target == null) {
     // 兜底：所有候选概率为 0 时随机猜一张
     const targets = room.seats.filter((t) => t && t !== seat && !t.eliminated);
     if (!targets.length) return;
@@ -953,6 +970,10 @@ function botGuess(room, seat) {
     const number = Math.floor(Math.random() * 12);
     handleGuess({ room, seatIndex: seat.index }, room, { target: target.index, position, color, number });
     return;
+  }
+  // 失误率：以一定概率不选全局最优，改为在合理候选中随机选一个（更像真人，避免完美必中）
+  if (Math.random() < mistakeRate) {
+    best = candidates[Math.floor(Math.random() * candidates.length)];
   }
   handleGuess({ room, seatIndex: seat.index }, room, best);
 }
@@ -975,7 +996,8 @@ function botContinue(room, seat) {
       if (pJ > bestP) bestP = pJ;
     }
   }
-  if (bestP >= 0.3) handleContinueGuess({ room, seatIndex: seat.index }, room, {});
+  const continueMinP = room.fullBots ? BOT_CONTINUE_MIN_P_FULL : BOT_CONTINUE_MIN_P; // 完全体机器人回调到 30%
+  if (bestP >= continueMinP) handleContinueGuess({ room, seatIndex: seat.index }, room, {});
   else handleStopTurn({ room, seatIndex: seat.index }, room, {});
 }
 
@@ -1273,15 +1295,58 @@ function leaveRoom(client) {
   }
 }
 
+// 完全体机器人开关（仅房主）：开启后机器人严格按概率行动、不故意失误
+function handleSetFullBots(client, room, msg) {
+  const seat = seatOf(client);
+  if (!seat || room.hostSeat !== seat.index) return;
+  room.fullBots = !!(msg && msg.enabled);
+  broadcastState(room);
+  broadcastNotice(room, `${seat.nickname} ${room.fullBots ? '开启了' : '关闭了'}完全体机器人`);
+}
+
+// 伪装开关（仅房主）：开启后机器人用玩家昵称，并在猜牌前模拟人类思考时间
+function handleSetDisguise(client, room, msg) {
+  const seat = seatOf(client);
+  if (!seat || room.hostSeat !== seat.index) return;
+  room.disguise = !!(msg && msg.enabled);
+  if (room.phase === 'lobby') applyDisguiseNames(room);
+  broadcastState(room);
+  broadcastNotice(room, `${seat.nickname} ${room.disguise ? '开启了' : '关闭了'}伪装（机器人用玩家昵称+思考时间）`);
+}
+
+// 从玩家昵称池选一个未被占用的名字
+function pickBotName(room) {
+  const used = new Set(room.seats.filter(Boolean).map(s => s.nickname));
+  const free = BOT_HUMAN_NAMES.filter(n => !used.has(n));
+  if (free.length > 0) return free[Math.floor(Math.random() * free.length)];
+  return '玩家' + (100 + Math.floor(Math.random() * 900));
+}
+
+// 切换伪装时同步机器人昵称（仅大厅阶段）
+function applyDisguiseNames(room) {
+  const used = new Set(room.seats.filter(Boolean).map(s => s.nickname));
+  for (const s of room.seats) {
+    if (!s || !s.isBot) continue;
+    if (room.disguise) {
+      const free = BOT_HUMAN_NAMES.filter(n => !used.has(n));
+      s.nickname = free.length > 0 ? free[Math.floor(Math.random() * free.length)] : ('玩家' + (100 + Math.floor(Math.random() * 900)));
+    } else {
+      s.nickname = ['机器人A', '机器人B', '机器人C', '机器人D'][s.index] || s.nickname;
+    }
+    used.add(s.nickname);
+  }
+}
+
 function handleAddBot(client, room) {
   if (room.hostSeat !== client.seatIndex) return err(client, '只有房主可以添加机器人');
   if (room.phase !== 'lobby') return err(client, '对局开始后不能添加机器人');
   const idx = room.seats.findIndex(s => s === null);
   if (idx === -1) return err(client, '房间已满');
   const names = ['机器人A', '机器人B', '机器人C', '机器人D'];
-  room.seats[idx] = makeSeat(idx, names[idx], true);
+  const nickname = room.disguise ? pickBotName(room) : names[idx];
+  room.seats[idx] = makeSeat(idx, nickname, true);
   broadcastState(room);
-  broadcastNotice(room, `已添加 ${names[idx]}`);
+  broadcastNotice(room, `已添加 ${nickname}`);
 }
 
 function handleRemoveBot(client, room, msg) {
@@ -1432,6 +1497,8 @@ function routeMessage(client, msg) {
     case 'remove_bot': return room ? handleRemoveBot(client, room, msg) : null;
     case 'start_game': return room ? handleStartGame(client, room) : null;
     case 'set_spectator_view': return room ? handleSetSpectatorView(client, room, msg) : null;
+    case 'set_full_bots': return room ? handleSetFullBots(client, room, msg) : null;
+    case 'set_disguise': return room ? handleSetDisguise(client, room, msg) : null;
     case 'arrange_done': return room ? handleArrange(client, room, msg) : null;
     case 'draw': return room ? handleDraw(client, room, msg) : null;
     case 'place_drawn': return room ? handlePlace(client, room, msg) : null;

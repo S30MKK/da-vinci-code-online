@@ -64,6 +64,8 @@
         <div id="seat-list" class="seat-list"></div>
         <div class="row" id="host-controls" hidden>
           <button class="btn" id="btn-add-bot">＋ 添加机器人</button>
+          <label class="toggle-label" title="开启后机器人严格按概率行动、不会故意选错，连猜阈值回调到 30%"><input type="checkbox" id="chk-full-bots"> 完全体机器人</label>
+          <label class="toggle-label" title="开启后机器人使用玩家昵称，并在猜牌前模拟人类思考时间"><input type="checkbox" id="chk-disguise"> 伪装（玩家昵称+思考时间）</label>
           <button class="btn primary" id="btn-start">开始对局</button>
         </div>
         <div class="row" id="invite-row" hidden>
@@ -123,7 +125,6 @@
 
 </div>
 
-<div id="debug-badge" style="position:fixed;top:8px;left:8px;z-index:9999;background:#222;color:#fff;font-size:12px;padding:4px 8px;border-radius:4px;max-width:70vw;word-break:break-all;">v2.9 加载中…</div>
 <div id="modal-root"></div>
 <div id="toast-root"></div>
 

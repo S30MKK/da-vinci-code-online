@@ -239,6 +239,8 @@ input:focus { outline: 2px solid #4fc3a1; border-color: transparent; }
 .result-row.win { border: 1px solid #2e9e7c; }
 
 #modal-root .overlay { z-index: 80; }
+.toggle-label { display: inline-flex; align-items: center; gap: 5px; color: #cfe3f5; font-size: 13px; cursor: pointer; user-select: none; }
+.toggle-label input { width: 16px; height: 16px; accent-color: #2e9e7c; cursor: pointer; }
 .overlay[hidden] { display: none !important; }
 .modal-body { text-align: center; }
 .color-pick { display: flex; gap: 10px; justify-content: center; margin: 12px 0; }
