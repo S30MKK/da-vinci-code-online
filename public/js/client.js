@@ -37,13 +37,15 @@ function showToast(text, ms) {
   root.appendChild(el);
   setTimeout(() => el.remove(), ms || 2600);
 }
-function openModal(html) {
+function openModal(html, opts = {}) {
   const root = $('modal-root');
   root.innerHTML = '';
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
   overlay.innerHTML = `<div class="panel"><div class="modal-body">${html}</div></div>`;
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+  if (opts.dismissable !== false) {
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+  }
   root.appendChild(overlay);
   return overlay;
 }
@@ -94,6 +96,7 @@ function handleMessage(msg) {
   switch (msg.type) {
     case 'state':
       if (App.state && App.state.gameId !== msg.gameId) {
+        App.curGameId = null;
         App.arranged = false;
         App.arrangeOrder = null;
         App.results = null;
@@ -367,7 +370,7 @@ function turnBannerText(st) {
 function openArrangeModal() {
   const me = mySeat();
   if (!me) return;
-  if (App.state.gameId !== App.curGameId) {
+  if (App.state.gameId !== App.curGameId || !App.arrangeOrder) {
     App.curGameId = App.state.gameId;
     App.arrangeOrder = me.tiles.map(t => t.id);
     App.arranged = false;
@@ -384,7 +387,7 @@ function openArrangeModal() {
 
 function renderArrangeModal() {
   const me = mySeat();
-  if (!me) return;
+  if (!me || !App.arrangeOrder) return;
   const byId = new Map(me.tiles.map(t => [t.id, t]));
   const order = App.arrangeOrder.map(id => byId.get(id));
   let html = '<h3>排列你的手牌</h3>';
@@ -410,7 +413,7 @@ function renderArrangeModal() {
   html += '<div class="row" style="justify-content:center;margin-top:14px">';
   html += '<button class="btn primary" onclick="confirmArrange()">确认排列</button>';
   html += '</div>';
-  const overlay = openModal(html);
+  const overlay = openModal(html, { dismissable: false });
   overlay.querySelector('.panel').style.maxWidth = '520px';
 }
 function selectJoker(id) {
@@ -490,7 +493,7 @@ function renderResults() {
   html += '<button class="btn" id="btn-see-replay">🎬 查看回放</button>';
   html += '<button class="btn ghost" id="btn-back-lobby">返回大厅</button>';
   html += '</div>';
-  const overlay = openModal(html);
+  const overlay = openModal(html, { dismissable: false });
   overlay.querySelector('.panel').style.maxWidth = '520px';
   $('btn-see-replay').onclick = () => send({ type: 'get_replays' });
   $('btn-back-lobby').onclick = () => {
