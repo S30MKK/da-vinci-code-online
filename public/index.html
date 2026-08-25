@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon.svg">
-<link rel="stylesheet" href="css/styles.css?v=20260825b">
+<link rel="stylesheet" href="css/styles.css?v=20260825k">
 </head>
 <body>
 <div id="app">
@@ -17,7 +17,7 @@
   <section id="view-lobby" class="view">
     <header class="hero">
       <h1>达芬奇密码</h1>
-      <p class="sub">多人联机 · 手机/电脑互通 · 免安装即玩 · v2.1 可选黑/白牌堆</p>
+      <p class="sub">多人联机 · 手机/电脑互通 · 免安装即玩 · v2.9 大屏自适应</p>
     </header>
     <div class="panel" id="lobby-login">
       <label for="nickname">你的昵称</label>
@@ -91,10 +91,10 @@
       <div id="own-area" class="own-area">
         <div class="seat-label" id="own-label"></div>
         <div id="own-row" class="tile-row"></div>
+        <div class="row-hint">← 小 · 大 →</div>
       </div>
     </div>
     <div class="chatbox" id="game-chat"></div>
-    <div id="results-overlay" class="overlay" hidden></div>
   </section>
 
   <!-- ======== 回放 ======== -->
@@ -116,9 +116,10 @@
 
 </div>
 
+<div id="debug-badge" style="position:fixed;top:8px;left:8px;z-index:9999;background:#222;color:#fff;font-size:12px;padding:4px 8px;border-radius:4px;max-width:70vw;word-break:break-all;">v2.9 加载中…</div>
 <div id="modal-root"></div>
 <div id="toast-root"></div>
 
-<script src="js/client.js?v=20260825b"></script>
+<script src="js/client.js?v=20260825k"></script>
 </body>
 </html>

@@ -56,11 +56,13 @@ function tileRank(t) {
   return t.color === 'b' ? t.number * 2 : t.number * 2 + 1;
 }
 
-// Joker 与任何牌"相等"（可放任意位置）；数字牌按 rank 升序
+// 数字牌按 rank 升序；Joker 排最后（百搭可放任意位置，默认排列阶段再移到中间）。
+// 注意：比较器必须是合法全序，否则 Array.sort 结果不确定，可能产生非升序的默认牌序。
 function compareTiles(a, b) {
-  if (a.joker && b.joker) return 0;
-  if (a.joker) return 0;
-  if (b.joker) return 0;
+  const aj = a.joker ? 1 : 0;
+  const bj = b.joker ? 1 : 0;
+  if (aj !== bj) return aj - bj;
+  if (aj) return a.color === b.color ? 0 : (a.color === 'b' ? -1 : 1);
   return tileRank(a) - tileRank(b);
 }
 
@@ -327,7 +329,8 @@ function makeSeat(index, nickname, isBot) {
     client: null,            // 真人玩家的 Client 引用
     tiles: [],               // 牌行（移出牌后自动紧凑）
     eliminated: false,
-    stats: freshSeatStats()
+    stats: freshSeatStats(),
+    drawnThisTurn: null        // 本回合新抽到的牌 id（标记用）
   };
 }
 
@@ -411,7 +414,7 @@ function stateFor(room, client) {
       eliminated: s.eliminated,
       isHost: room.hostSeat === idx,
       tiles: s.tiles.map(t => {
-        const colorVisible = t.revealed || (isSelf && (t.known || t.pile)) || seeAll;
+        const colorVisible = true; // 黑/白颜色对所有玩家公开（数字仍保密）
         const valueVisible = t.revealed || (isSelf && t.known) || seeAll;
         return {
           id: t.id,
@@ -421,7 +424,8 @@ function stateFor(room, client) {
           number: valueVisible ? t.number : null,
           joker: valueVisible ? !!t.joker : false,
           knownToOwner: !!t.known,
-          pile: t.pile || null
+          pile: t.pile || null,
+          fresh: t.id === s.drawnThisTurn   // 本回合新抽到的牌（标记）
         };
       })
     };
@@ -561,6 +565,7 @@ function nextTurn(room) {
   }
   const seat = room.seats[room.currentTurn];
   if (!seat) return;
+  seat.drawnThisTurn = null;
   room.pendingDraw = null;
   room.pendingGuess = null;
   room.pendingAction = (room.blackPile.length + room.whitePile.length) > 0 ? 'draw' : 'guess';
@@ -594,6 +599,18 @@ function checkEliminations(room) {
 
 /* ---------------- 抽牌 / 放置 / 猜牌 / 翻牌 ---------------- */
 
+// 摸到的新牌自动插入牌行：数字牌按升序就位，Joker 放中间（回合内可再调整）
+function autoInsertPos(seat, tile) {
+  if (tile.joker) return Math.floor(seat.tiles.length / 2);
+  const r = tileRank(tile);
+  for (let i = 0; i < seat.tiles.length; i++) {
+    const t = seat.tiles[i];
+    if (t.joker) continue;
+    if (tileRank(t) > r) return i;
+  }
+  return seat.tiles.length;
+}
+
 function handleDraw(client, room, msg) {
   const seat = seatOf(client);
   if (!seat || room.phase !== 'playing' || room.currentTurn !== seat.index || room.pendingAction !== 'draw') return;
@@ -601,12 +618,18 @@ function handleDraw(client, room, msg) {
   if (!pile || room[pile].length === 0) return;
   const tile = room[pile].pop();
   seat.stats.draws.push(tile);
-  room.pendingDraw = { ...tile, revealed: false, known: false, pile: pile === 'blackPile' ? 'b' : 'w' };
-  room.pendingAction = 'place';
+  // 摸到的牌对自己明牌，并自动按升序排入牌行（Joker 放中间，回合内可再调整）
+  const drawn = { ...tile, revealed: false, known: true, pile: pile === 'blackPile' ? 'b' : 'w' };
+  const pos = autoInsertPos(seat, drawn);
+  seat.tiles.splice(pos, 0, drawn);
+  seat.drawnThisTurn = drawn.id; // 标记本回合新抽到的牌
+  room.pendingDraw = null;
+  room.pendingAction = 'guess';
   room.events.push({
     type: 'draw', seat: seat.index, pile: pile === 'blackPile' ? 'b' : 'w',
     tileId: tile.id, color: tile.color, number: tile.number, joker: tile.joker
   });
+  room.events.push({ type: 'place', seat: seat.index, position: pos, auto: true });
   room.lastActiveAt = Date.now();
   broadcastState(room);
   if (seat.isBot) scheduleBot(room, seat);
@@ -627,6 +650,69 @@ function handlePlace(client, room, msg) {
   if (seat.isBot) scheduleBot(room, seat);
 }
 
+// 自己的回合内随时调整牌行（主要移动 Joker；数字牌必须保持升序）
+function handleReorderTiles(client, room, msg) {
+  const seat = seatOf(client);
+  if (!seat || room.phase !== 'playing' || room.currentTurn !== seat.index) return;
+  const pos = msg && msg.positions;
+  if (!Array.isArray(pos)) return;
+  const ids = new Set(seat.tiles.map(t => t.id));
+  if (pos.length !== seat.tiles.length ||
+      !pos.every(id => Number.isInteger(id) && ids.has(id)) ||
+      new Set(pos).size !== pos.length) return;
+  const byId = new Map(seat.tiles.map(t => [t.id, t]));
+  const ordered = pos.map(id => byId.get(id));
+  let prev = -Infinity;
+  for (const t of ordered) {
+    if (t.joker) continue;
+    const r = tileRank(t);
+    if (r < prev) return;
+    prev = r;
+  }
+  seat.tiles = ordered;
+  room.lastActiveAt = Date.now();
+  broadcastState(room);
+}
+
+// 猜对后：选择继续猜
+function handleContinueGuess(client, room, msg) {
+  const seat = seatOf(client);
+  if (!seat || room.phase !== 'playing' || room.currentTurn !== seat.index || room.pendingAction !== 'continue') return;
+  room.pendingAction = 'guess';
+  room.lastActiveAt = Date.now();
+  broadcastState(room);
+  if (seat.isBot) scheduleBot(room, seat); // 机器人继续猜
+}
+
+// 猜对后：停手，结束自己的回合
+function handleStopTurn(client, room, msg) {
+  const seat = seatOf(client);
+  if (!seat || room.phase !== 'playing' || room.currentTurn !== seat.index || room.pendingAction !== 'continue') return;
+  room.pendingAction = 'wait';
+  room.lastActiveAt = Date.now();
+  advanceAfterAction(room);
+}
+
+// 牌堆已空时猜错：自选一张牌抛弃（翻开并移出游戏）
+function handleDiscard(client, room, msg) {
+  const seat = seatOf(client);
+  if (!seat || room.phase !== 'playing' || room.currentTurn !== seat.index || room.pendingAction !== 'discard') return;
+  const pos = msg.position;
+  if (!Number.isInteger(pos) || pos < 0 || pos >= seat.tiles.length) return;
+  const tile = seat.tiles[pos];
+  if (tile.revealed) return;
+  tile.revealed = true;
+  room.removed.add(tile.id);
+  room.events.push({ type: 'reveal', seat: seat.index, position: pos, tileId: tile.id, reason: 'discard' });
+  room.events.push({ type: 'remove', seat: seat.index, tileId: tile.id });
+  room.pendingAction = 'wait';
+  room.lastActiveAt = Date.now();
+  broadcastState(room);
+  broadcastNotice(room, `${seat.nickname} 抛弃了 ${tileLabel(tile)}。`);
+  checkEliminations(room);
+  advanceAfterAction(room);
+}
+
 function handleGuess(client, room, msg) {
   const seat = seatOf(client);
   if (!seat || room.phase !== 'playing' || room.currentTurn !== seat.index || room.pendingAction !== 'guess') return;
@@ -634,13 +720,16 @@ function handleGuess(client, room, msg) {
   const pos = msg.position;
   if (!target || target === seat || target.eliminated ||
       !Number.isInteger(pos) || pos < 0 || pos >= target.tiles.length) return;
-  if (msg.color !== 'b' && msg.color !== 'w') return;
-  if (!Number.isInteger(msg.number) || msg.number < 0 || msg.number > 11) return;
+  const jokerGuess = msg.joker === true;
+  if (!jokerGuess && msg.color !== 'b' && msg.color !== 'w') return;
+  if (!jokerGuess && (!Number.isInteger(msg.number) || msg.number < 0 || msg.number > 11)) return;
   const guessedTile = target.tiles[pos];
   if (guessedTile.revealed) return;
 
-  const correct = !guessedTile.joker && guessedTile.color === msg.color && guessedTile.number === msg.number;
-  const p = estimateGuessProbability(room, seat, target, pos, msg.color, msg.number);
+  const correct = jokerGuess
+    ? !!guessedTile.joker
+    : !guessedTile.joker && guessedTile.color === msg.color && guessedTile.number === msg.number;
+  const p = estimateGuessProbability(room, seat, target, pos, jokerGuess ? null : msg.color, jokerGuess ? null : msg.number, jokerGuess);
 
   seat.stats.guesses += 1;
   seat.stats.expectedHits += p;
@@ -655,28 +744,51 @@ function handleGuess(client, room, msg) {
 
   room.events.push({
     type: 'guess', seat: seat.index, target: target.index,
-    position: pos, color: msg.color, number: msg.number, correct
+    position: pos, color: jokerGuess ? null : msg.color, number: jokerGuess ? null : msg.number, joker: jokerGuess, correct
   });
 
   if (correct) {
-    guessedTile.revealed = true;
+    guessedTile.revealed = true; // 被猜中的牌翻开展示，全场可见（明牌）
     room.events.push({ type: 'reveal', seat: target.index, position: pos, tileId: guessedTile.id, reason: 'correct' });
-    target.tiles.splice(pos, 1);
     room.removed.add(guessedTile.id);
     room.events.push({ type: 'remove', seat: target.index, tileId: guessedTile.id });
     seat.stats.eliminations += 1;
-    room.pendingAction = 'wait';
     room.lastActiveAt = Date.now();
-    broadcastState(room);
-    broadcastNotice(room, `${seat.nickname} 猜中了 ${target.nickname} 的${msg.color === 'b' ? '黑' : '白'}${msg.number}！`);
     checkEliminations(room);
-    advanceAfterAction(room);
+    const alive = room.seats.filter(s => s && !s.eliminated && s.tiles.some(t => !t.revealed));
+    const hitText = `${seat.nickname} 猜中了 ${target.nickname} 的${jokerGuess ? 'Joker' : (msg.color === 'b' ? '黑' : '白') + msg.number}！`;
+    if (alive.length <= 1) {
+      room.pendingAction = 'wait';
+      broadcastNotice(room, hitText);
+      endGame(room, alive.length === 1 ? alive[0].index : null);
+    } else {
+      // 猜对后：可选择继续猜或停手
+      room.pendingAction = 'continue';
+      broadcastState(room);
+      broadcastNotice(room, hitText + ' 可继续猜或停手。');
+      if (seat.isBot) scheduleBot(room, seat);
+    }
   } else {
-    room.pendingAction = 'reveal';
-    room.lastActiveAt = Date.now();
-    broadcastState(room);
-    broadcastNotice(room, `${seat.nickname} 猜错了！需要翻开自己的一张牌。`);
-    if (seat.isBot) scheduleBot(room, seat);
+    // 规则：猜错翻开本回合新抽到的牌；牌堆已空没抽到牌时，自选一张抛弃
+    const dPos = seat.drawnThisTurn != null ? seat.tiles.findIndex(t => t.id === seat.drawnThisTurn) : -1;
+    const drawnTile = dPos >= 0 && !seat.tiles[dPos].revealed ? seat.tiles[dPos] : null;
+    if (drawnTile) {
+      drawnTile.revealed = true;
+      seat.drawnThisTurn = null;
+      room.events.push({ type: 'reveal', seat: seat.index, position: dPos, tileId: drawnTile.id, reason: 'wrong-drawn' });
+      room.pendingAction = 'wait';
+      room.lastActiveAt = Date.now();
+      broadcastState(room);
+      broadcastNotice(room, `${seat.nickname} 猜错了！翻开本回合抽到的牌 ${tileLabel(drawnTile)}。`);
+      checkEliminations(room);
+      advanceAfterAction(room);
+    } else {
+      room.pendingAction = 'discard';
+      room.lastActiveAt = Date.now();
+      broadcastState(room);
+      broadcastNotice(room, `${seat.nickname} 猜错了！牌堆已空，请自选一张牌抛弃。`);
+      if (seat.isBot) scheduleBot(room, seat);
+    }
   }
 }
 
@@ -727,17 +839,22 @@ function rowBounds(seat, pos) {
   return { lo, hi };
 }
 
-function estimateGuessProbability(room, guesser, target, pos, color, number) {
+function estimateGuessProbability(room, guesser, target, pos, color, number, isJoker) {
   const guessedTile = target.tiles[pos];
-  // 抽牌时选择过牌堆：该牌颜色公开，猜其它颜色必然错误
-  const restrictedColor = guessedTile && guessedTile.pile ? guessedTile.pile : null;
-  if (restrictedColor && color !== restrictedColor) return 0;
+  // 黑/白颜色公开：暗牌颜色已知，猜其它颜色必然错误（Joker 亦按颜色区分）
+  const restrictedColor = guessedTile && !guessedTile.revealed ? guessedTile.color : null;
+  if (!isJoker && restrictedColor && color !== restrictedColor) return 0;
   const pool = poolFor(room, guesser);
   const nonJokers = pool.filter(t => !t.joker && (restrictedColor ? t.color === restrictedColor : true));
   const jokers = pool.filter(t => t.joker && (restrictedColor ? t.color === restrictedColor : true)).length;
   const { lo, hi } = rowBounds(target, pos);
-  const targetRank = color === 'b' ? number * 2 : number * 2 + 1;
   const feasible = nonJokers.filter(c => tileRank(c) >= lo && tileRank(c) <= hi);
+  if (isJoker) {
+    // Joker 是百搭，可放任意位置：命中概率 = 可行 Joker 数 /（可行数字牌 + 可行 Joker）
+    const denom = feasible.length + jokers;
+    return denom > 0 ? jokers / denom : 0;
+  }
+  const targetRank = color === 'b' ? number * 2 : number * 2 + 1;
   const hasExact = feasible.some(c => c.color === color && c.number === number);
   if (!hasExact) return 0;
   const denom = feasible.length + jokers;
@@ -756,6 +873,8 @@ function scheduleBot(room, seat) {
     else if (room.pendingAction === 'place') botPlace(room, seat);
     else if (room.pendingAction === 'guess') botGuess(room, seat);
     else if (room.pendingAction === 'reveal') botReveal(room, seat);
+    else if (room.pendingAction === 'discard') botDiscard(room, seat);
+    else if (room.pendingAction === 'continue') botContinue(room, seat);
   }, BOT_DELAY_MS);
   room.timers.add(t);
   t.unref && t.unref();
@@ -802,6 +921,11 @@ function botGuess(room, seat) {
           }
         }
       }
+      // 也考虑猜 Joker（横线）
+      const pJoker = estimateGuessProbability(room, seat, target, pos, null, null, true);
+      if (pJoker > best.p) {
+        best = { p: pJoker, target: target.index, position: pos, joker: true };
+      }
     }
   }
   if (best.target == null) {
@@ -819,6 +943,35 @@ function botGuess(room, seat) {
     return;
   }
   handleGuess({ room, seatIndex: seat.index }, room, best);
+}
+
+// 猜对后机器人决策：有把握就继续猜，否则停手
+function botContinue(room, seat) {
+  if (room.pendingAction !== 'continue') return;
+  let bestP = -1;
+  for (const target of room.seats) {
+    if (!target || target === seat || target.eliminated) continue;
+    for (let pos = 0; pos < target.tiles.length; pos++) {
+      if (target.tiles[pos].revealed) continue;
+      for (const color of ['b', 'w']) {
+        for (let number = 0; number <= 11; number++) {
+          const p = estimateGuessProbability(room, seat, target, pos, color, number);
+          if (p > bestP) bestP = p;
+        }
+      }
+      const pJ = estimateGuessProbability(room, seat, target, pos, null, null, true);
+      if (pJ > bestP) bestP = pJ;
+    }
+  }
+  if (bestP >= 0.3) handleContinueGuess({ room, seatIndex: seat.index }, room, {});
+  else handleStopTurn({ room, seatIndex: seat.index }, room, {});
+}
+
+function botDiscard(room, seat) {
+  if (room.pendingAction !== 'discard') return;
+  const pos = seat.tiles.findIndex(t => !t.revealed);
+  if (pos < 0) return;
+  handleDiscard({ room, seatIndex: seat.index }, room, { position: pos });
 }
 
 function botReveal(room, seat) {
@@ -1190,8 +1343,12 @@ function routeMessage(client, msg) {
     case 'arrange_done': return room ? handleArrange(client, room, msg) : null;
     case 'draw': return room ? handleDraw(client, room, msg) : null;
     case 'place_drawn': return room ? handlePlace(client, room, msg) : null;
+    case 'reorder_tiles': return room ? handleReorderTiles(client, room, msg) : null;
     case 'guess': return room ? handleGuess(client, room, msg) : null;
     case 'reveal_own': return room ? handleRevealOwn(client, room, msg) : null;
+    case 'continue_guess': return room ? handleContinueGuess(client, room, msg) : null;
+    case 'stop_turn': return room ? handleStopTurn(client, room, msg) : null;
+    case 'discard': return room ? handleDiscard(client, room, msg) : null;
     default: break;
   }
 }
@@ -1326,6 +1483,25 @@ if (sweepTimer.unref) sweepTimer.unref();
  * 战绩备份 API：GET 下载 / POST 恢复
  * ------------------------------------------------------------------- */
 
+// 前端错误上报（内存保留最近 200 条，便于诊断）
+const clientLogs = [];
+function handleClientLog(req, res) {
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => {
+    try {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      clientLogs.push({ at: Date.now(), ...body });
+      if (clientLogs.length > 200) clientLogs.shift();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(400); res.end('{}');
+    }
+  });
+  req.on('error', () => { try { res.writeHead(400); res.end('{}'); } catch (e) {} });
+}
+
 function handleStatsUpload(req, res) {
   const chunks = [];
   let size = 0;
@@ -1385,6 +1561,15 @@ function startServer(opts = {}) {
   loadStats();
   const server = http.createServer((req, res) => {
     const urlPath = (req.url || '/').split('?')[0];
+    if (urlPath === '/api/log' && req.method === 'POST') {
+      handleClientLog(req, res);
+      return;
+    }
+    if (urlPath === '/api/log' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(clientLogs));
+      return;
+    }
     if (urlPath === '/api/stats' && req.method === 'GET') {
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',

@@ -60,15 +60,45 @@ function canAct() {
 }
 
 /* ===================== WebSocket ===================== */
+function updateDebugBadge() {
+  try {
+    const el = document.getElementById('debug-badge');
+    if (!el) return;
+    const st = App.state;
+    const parts = ['v2.9'];
+    if (st) {
+      parts.push('phase=' + st.phase, 'turn=' + st.currentTurn, 'act=' + st.pendingAction, 'you=' + (st.you.seat != null ? st.you.seat : '观战'));
+    }
+    parts.push('modal=' + (document.getElementById('modal-root').children.length));
+    const roEl = document.getElementById('results-overlay');
+    parts.push('ro=' + (roEl ? (getComputedStyle(roEl).display === 'none' ? '0' : 'SHOW') : 'x'));
+    parts.push('arranged=' + App.arranged);
+    el.textContent = parts.join(' | ');
+  } catch (e) { /* ignore */ }
+}
+function reportClientError(kind, msg) {
+  try {
+    fetch('/api/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, msg: String(msg).slice(0, 500), url: location.href })
+    }).catch(() => {});
+  } catch (e) { /* ignore */ }
+}
 window.addEventListener('error', (e) => {
   console.error('全局异常:', e.message);
+  reportClientError('window-error', e.message + ' | ' + (e.filename || '') + ':' + (e.lineno || ''));
   showToast('出现异常，请刷新页面重试');
+});
+window.addEventListener('unhandledrejection', (e) => {
+  reportClientError('unhandledrejection', e.reason && e.reason.message ? e.reason.message : String(e.reason));
 });
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   const ws = new WebSocket(proto + location.host);
   App.ws = ws;
   ws.onopen = () => {
+    reportClientError('ws', 'connected');
     showToast('已连接服务器');
     if (App.nickname) send({ type: 'get_stats', nickname: App.nickname });
   };
@@ -78,6 +108,7 @@ function connect() {
     handleMessage(msg);
   };
   ws.onclose = () => {
+    reportClientError('ws', 'closed');
     showToast('连接断开，正在自动重连…', 4000);
     if (!App.reconnectTimer) {
       App.reconnectTimer = setInterval(() => {
@@ -101,6 +132,7 @@ function handleMessage(msg) {
     handleMessageInner(msg);
   } catch (e) {
     console.error('消息处理异常:', e);
+    reportClientError('handleMessage', e.message);
     showToast('出现异常，请刷新页面重试');
   }
 }
@@ -162,6 +194,7 @@ function showView(name) {
 function render() {
   const st = App.state;
   if (!st) return;
+  updateDebugBadge();
   try {
     if (st.phase === 'lobby') {
       showView('room');
@@ -172,6 +205,7 @@ function render() {
     }
   } catch (e) {
     console.error('渲染异常:', e);
+    reportClientError('render', e.message);
     showToast('界面渲染出错，请刷新页面重试');
   }
 }
@@ -219,10 +253,29 @@ function renderRoom() {
 function tileEl(t, onClick) {
   const div = document.createElement('div');
   div.className = 'tile';
-  if (t.color != null) {
+  const faceDown = !t.revealed && t.number == null && !t.joker; // 暗牌：黑/白公开，数字保密
+  if (t.fresh) {
+    div.classList.add('tile-fresh');
+    const badge = document.createElement('span');
+    badge.className = 'tile-fresh-badge';
+    badge.textContent = '新';
+    div.appendChild(badge);
+  }
+  if (faceDown) {
+    div.classList.add('tile-down');
+    if (t.color === 'b') div.classList.add('tile-down-b');
+    else if (t.color === 'w') div.classList.add('tile-down-w');
+    if (t.knownToOwner) div.classList.add('tile-own');
+  } else if (t.color != null) {
     div.classList.add(t.joker ? 'tile-joker' : (t.color === 'b' ? 'tile-b' : 'tile-w'));
     if (!t.joker) div.textContent = t.number;
-    if (t.revealed) div.classList.add('tile-revealed');
+    if (t.revealed) {
+      div.classList.add('tile-revealed');
+      const mark = document.createElement('span');
+      mark.className = 'tile-revealed-mark';
+      mark.textContent = '已翻';
+      div.appendChild(mark);
+    }
     else if (t.number == null && !t.joker) {
       div.textContent = '?';
       div.classList.add('tile-unknown');
@@ -268,6 +321,10 @@ function playerBox(s, isMe) {
   });
   if (s.eliminated) box.style.opacity = '.55';
   box.appendChild(row);
+  const hint = document.createElement('div');
+  hint.className = 'row-hint';
+  hint.textContent = '← 小 · 大 →';
+  box.appendChild(hint);
   return box;
 }
 
@@ -311,6 +368,7 @@ function renderOwnRow(row, me) {
   const st = App.state;
   const placing = canAct() && st.pendingAction === 'place';
   const revealing = canAct() && st.pendingAction === 'reveal';
+  const discarding = canAct() && st.pendingAction === 'discard';
   if (placing) {
     for (let pos = 0; pos <= me.tiles.length; pos++) {
       const slot = document.createElement('div');
@@ -325,6 +383,7 @@ function renderOwnRow(row, me) {
     me.tiles.forEach((t, pos) => {
       let onClick = null;
       if (revealing && !t.revealed) onClick = () => send({ type: 'reveal_own', position: pos });
+      if (discarding && !t.revealed) onClick = () => send({ type: 'discard', position: pos });
       row.appendChild(tileEl(t, onClick));
     });
   }
@@ -354,8 +413,10 @@ function renderActionArea() {
   switch (st.pendingAction) {
     case 'draw':
       area.innerHTML =
-        `<button class="btn" id="btn-draw-b">抽黑牌（剩 ${st.blackPileSize || 0}）</button>` +
-        `<button class="btn primary" id="btn-draw-w">抽白牌（剩 ${st.whitePileSize || 0}）</button>`;
+        '<div class="draw-choice">' +
+        `<button class="btn draw-tile draw-b" id="btn-draw-b"><span class="draw-tile-label">抽黑牌</span><span class="draw-tile-count">剩 ${st.blackPileSize || 0}</span></button>` +
+        `<button class="btn draw-tile draw-w" id="btn-draw-w"><span class="draw-tile-label">抽白牌</span><span class="draw-tile-count">剩 ${st.whitePileSize || 0}</span></button>` +
+        '</div>';
       $('btn-draw-b').disabled = (st.blackPileSize || 0) <= 0;
       $('btn-draw-w').disabled = (st.whitePileSize || 0) <= 0;
       $('btn-draw-b').onclick = () => send({ type: 'draw', pile: 'b' });
@@ -370,8 +431,27 @@ function renderActionArea() {
     case 'reveal':
       area.innerHTML = '<div class="hint">猜错了！点击自己的一张暗牌翻开</div>';
       break;
+    case 'discard':
+      area.innerHTML = '<div class="hint">牌堆已空，猜错了 —— 点击自己的一张暗牌抛弃</div>';
+      break;
+    case 'continue':
+      area.innerHTML = '<div class="hint">猜中了！可继续猜牌，或停手结束回合。</div>' +
+        '<div class="row" style="justify-content:center;margin-top:10px">' +
+        '<button class="btn primary" id="btn-continue-guess">继续猜</button>' +
+        '<button class="btn ghost" id="btn-stop-turn">停手</button>' +
+        '</div>';
+      $('btn-continue-guess').onclick = () => send({ type: 'continue_guess' });
+      $('btn-stop-turn').onclick = () => send({ type: 'stop_turn' });
+      break;
     default:
       break;
+  }
+  // 自己的回合内可随时调整 Joker 位置
+  const meSeat = st.seats[st.you.seat];
+  if (meSeat && meSeat.tiles.some(t => t.joker && !t.revealed)) {
+    const btn = '<div class="row" style="justify-content:center;margin-bottom:8px"><button class="btn small ghost" id="btn-adjust-joker">⇄ 调整 Joker</button></div>';
+    area.insertAdjacentHTML('afterbegin', btn);
+    $('btn-adjust-joker').onclick = () => openJokerAdjust();
   }
 }
 
@@ -383,10 +463,12 @@ function turnBannerText(st) {
   if (st.you.isSpectator) return '观战中 · 轮到 ' + curName;
   if (st.you.seat === st.currentTurn) {
     const t = {
-      draw: '轮到你：抽牌（选择黑牌堆或白牌堆）',
+      draw: '轮到你：抽牌（可选黑/白牌堆，摸到后自动按序排入）',
       place: '轮到你：放置抽到的牌',
       guess: '轮到你：猜牌',
-      reveal: '轮到你：翻开自己的一张牌'
+      reveal: '轮到你：翻开自己的一张牌',
+      discard: '轮到你：选择一张牌抛弃',
+      continue: '轮到你：猜中了！继续猜或停手'
     };
     return t[st.pendingAction] || '轮到你';
   }
@@ -397,6 +479,7 @@ function turnBannerText(st) {
 function openArrangeModal() {
   const me = mySeat();
   if (!me) return;
+  App.arrangeMode = 'arrange';
   if (App.state.gameId !== App.curGameId || !App.arrangeOrder) {
     App.curGameId = App.state.gameId;
     App.arrangeOrder = me.tiles.map(t => t.id);
@@ -417,7 +500,8 @@ function renderArrangeModal() {
   if (!me || !App.arrangeOrder) return;
   const byId = new Map(me.tiles.map(t => [t.id, t]));
   const order = App.arrangeOrder.map(id => byId.get(id));
-  let html = '<h3>排列你的手牌</h3>';
+  const isAdjust = App.arrangeMode === 'adjust';
+  let html = `<h3>${isAdjust ? '调整 Joker 位置' : '排列你的手牌'}</h3>`;
   html += '<p class="hint">Joker 是百搭牌，可以放在任意位置。点击 Joker 选中，再点下方位置移动。</p>';
   html += '<div class="tile-row" style="margin:12px 0">';
   order.forEach((t) => {
@@ -438,7 +522,7 @@ function renderArrangeModal() {
   }
   html += '</div>';
   html += '<div class="row" style="justify-content:center;margin-top:14px">';
-  html += '<button class="btn primary" onclick="confirmArrange()">确认排列</button>';
+  html += `<button class="btn primary" onclick="confirmArrange()">${isAdjust ? '确认调整' : '确认排列'}</button>`;
   html += '</div>';
   const overlay = openModal(html, { dismissable: false });
   overlay.querySelector('.panel').style.maxWidth = '520px';
@@ -456,37 +540,65 @@ function moveJoker(id, pos) {
   renderArrangeModal();
 }
 function confirmArrange() {
-  send({ type: 'arrange_done', positions: App.arrangeOrder });
-  App.arranged = true;
+  if (App.arrangeMode === 'adjust') {
+    send({ type: 'reorder_tiles', positions: App.arrangeOrder });
+    App.arrangeOrder = null;
+  } else {
+    send({ type: 'arrange_done', positions: App.arrangeOrder });
+    App.arranged = true;
+  }
   closeModal();
+}
+function openJokerAdjust() {
+  const me = mySeat();
+  if (!me) return;
+  App.arrangeMode = 'adjust';
+  App.arrangeOrder = me.tiles.map(t => t.id);
+  App.selJoker = null;
+  renderArrangeModal();
 }
 
 /* ---------------- 猜牌弹窗 ---------------- */
 function openGuessModal(targetIdx, pos) {
   const target = App.state.seats[targetIdx];
   if (!target) return;
-  App.guess = { target: targetIdx, position: pos, color: 'b', number: 0 };
+  const tile = target.tiles[pos];
+  const knownColor = tile && (tile.color === 'b' || tile.color === 'w') ? tile.color : 'b';
+  App.guess = { target: targetIdx, position: pos, joker: false, color: knownColor, number: 0 };
   renderGuessModal();
 }
 function renderGuessModal() {
   const g = App.guess;
   const target = App.state.seats[g.target];
+  const tile = target.tiles[g.position];
+  const knownColor = tile && (tile.color === 'b' || tile.color === 'w') ? (tile.color === 'b' ? '黑' : '白') : null;
   let html = `<h3>猜 ${esc(target.nickname)} 的第 ${g.position + 1} 张牌</h3>`;
   html += '<div class="color-pick">';
-  html += `<button class="btn ${g.color === 'b' ? 'on' : ''}" onclick="setGuessColor('b')">黑色</button>`;
-  html += `<button class="btn ${g.color === 'w' ? 'on' : ''}" onclick="setGuessColor('w')">白色</button>`;
-  html += '</div>';
-  html += '<div class="num-grid">';
-  for (let n = 0; n <= 11; n++) {
-    html += `<button class="btn ${g.number === n ? 'on' : ''}" onclick="setGuessNumber(${n})">${n}</button>`;
+  html += `<button class="btn ${g.joker ? 'on' : ''}" onclick="setGuessJoker(true)" title="猜这张牌是 Joker（横线百搭牌）"><span class="joker-guess-mark"></span>Joker</button>`;
+  if (knownColor) {
+    html += `<span class="hint" style="align-self:center">这是一张<b>${knownColor}牌</b>（颜色公开）</span>`;
+  } else {
+    html += `<button class="btn ${!g.joker && g.color === 'b' ? 'on' : ''}" onclick="setGuessColor('b')">黑色</button>`;
+    html += `<button class="btn ${!g.joker && g.color === 'w' ? 'on' : ''}" onclick="setGuessColor('w')">白色</button>`;
   }
   html += '</div>';
+  if (!g.joker) {
+    html += '<div class="num-grid">';
+    for (let n = 0; n <= 11; n++) {
+      html += `<button class="btn ${g.number === n ? 'on' : ''}" onclick="setGuessNumber(${n})">${n}</button>`;
+    }
+    html += '</div>';
+  }
   html += `<button class="btn primary block" onclick="submitGuess()">确认猜牌</button>`;
   html += '<button class="btn link" onclick="closeModal()">取消</button>';
   openModal(html);
 }
+function setGuessJoker(v) {
+  if (App.guess) App.guess.joker = !!v;
+  renderGuessModal();
+}
 function setGuessColor(c) {
-  if (App.guess) App.guess.color = c;
+  if (App.guess) { App.guess.color = c; App.guess.joker = false; }
   renderGuessModal();
 }
 function setGuessNumber(n) {
@@ -496,7 +608,7 @@ function setGuessNumber(n) {
 function submitGuess() {
   const g = App.guess;
   if (!g) return;
-  send({ type: 'guess', target: g.target, position: g.position, color: g.color, number: g.number });
+  send({ type: 'guess', target: g.target, position: g.position, joker: g.joker, color: g.joker ? null : g.color, number: g.joker ? null : g.number });
   App.guess = null;
   closeModal();
 }
@@ -765,7 +877,7 @@ function buildReplaySnapshots(replay) {
       case 'guess': {
         const g = seats[ev.seat];
         const t = seats[ev.target];
-        const text = `${g.nickname} 猜 ${t.nickname} 第 ${ev.position + 1} 张是${ev.color === 'b' ? '黑' : '白'}${ev.number}`;
+        const text = `${g.nickname} 猜 ${t.nickname} 第 ${ev.position + 1} 张是${ev.joker ? '横线(Joker)' : (ev.color === 'b' ? '黑' : '白') + ev.number}`;
         push(ev.correct ? text + ' —— 猜中！' : text + ' —— 猜错');
         break;
       }
@@ -901,9 +1013,11 @@ function init() {
     openModal(
       '<h3>📖 玩法说明</h3>' +
       '<p style="text-align:left;font-size:14px;line-height:1.9;color:#cfe3f5">' +
-      '· 每回合先抽一张牌（不看牌面，凭推理放到自己牌行的某个位置），再猜一名对手的牌（报颜色+数字）。<br>' +
-      '· 猜对：对方该牌翻开并移出游戏；猜错：自己翻开一张牌。<br>' +
-      '· 牌序：黑0&lt;白0&lt;黑1&lt;白1&lt;…&lt;黑11&lt;白11；Joker 是百搭，可放任意位置，被猜中算猜错。<br>' +
+      '· 每回合先抽一张牌（可选黑/白牌堆）：摸到的牌对自己明牌，并自动按升序排入牌行；自己回合内可随时调整 Joker 位置。<br>' +
+      '· 再猜一名对手的牌：报数字或报「Joker」；被猜中的牌翻开并全场可见。<br>' +
+      '· 猜对：对方该牌翻开并全场可见，可继续猜或停手；猜错：翻开本回合新抽到的牌（牌堆已空则自选一张抛弃）。<br>' +
+      '· 所有牌的黑/白颜色公开可见（数字保密），抽牌仍可选黑堆或白堆。<br>' +
+      '· 牌序：黑0&lt;白0&lt;黑1&lt;白1&lt;…&lt;黑11&lt;白11；Joker（横线）是百搭，可放任意位置，猜牌时也可报「Joker」，猜中即移除、猜错翻自己一张。<br>' +
       '· 所有牌都被翻开即出局，最后仍持有暗牌者获胜。<br>' +
       '· 每局结束会给出综合分（技术+运气）并累计积分，战绩按昵称记录。</p>' +
       '<button class="btn link" onclick="closeModal()">关闭</button>'

@@ -27,8 +27,26 @@ test('排序：黑0 < 白0 < 黑1 < 白1 < ... < 黑11 < 白11', () => {
   assert.ok(S.compareTiles(w1(), w11) < 0);
   assert.ok(S.compareTiles(b11, w11) < 0);
   const j = { joker: true };
-  assert.strictEqual(S.compareTiles(j, b0), 0); // Joker 百搭
-  assert.strictEqual(S.compareTiles(b0, j), 0);
+  // 比较器必须是合法全序：Joker 排数字牌之后（"百搭可放任意位置"由排列规则保证）
+  assert.ok(S.compareTiles(j, b0) > 0);
+  assert.ok(S.compareTiles(b0, j) < 0);
+});
+
+test('开局默认排列：任意发牌后数字牌均升序，可直接确认', () => {
+  for (let i = 0; i < 200; i++) {
+    const room = S.createRoom();
+    for (let k = 0; k < 4; k++) room.seats[k] = S.makeSeat(k, '玩家' + k, false);
+    S.startGame(room);
+    for (const seat of room.seats) {
+      let prev = -Infinity;
+      for (const t of seat.tiles) {
+        if (t.joker) continue;
+        const r = S.tileRank(t);
+        assert.ok(r >= prev, '默认牌序非法：' + seat.tiles.map(x => S.tileLabel(x)).join(','));
+        prev = r;
+      }
+    }
+  }
 });
 
 function w1() { return { color: 'w', number: 1, joker: false }; }
@@ -46,16 +64,20 @@ test('猜牌概率：公开信息近似估算', () => {
   room.seats[0] = guesser;
   room.seats[1] = target;
 
-  // 无明牌约束：25 个未知（23 数字 + 2 Joker），白色5可行 -> 1/25
+  // 颜色公开：目标第 0 张是白5，猜白5 可行 -> 白牌 12 张中 1 张（另有白 Joker）→ 1/13
   const p1 = S.estimateGuessProbability(room, guesser, target, 0, 'w', 5);
-  assert.ok(Math.abs(p1 - 1 / 25) < 1e-9, 'p1=' + p1);
+  assert.ok(Math.abs(p1 - 1 / 13) < 1e-9, 'p1=' + p1);
 
-  // 明牌约束：位置 1 左侧明牌黑3（rank 6），猜黑1（rank 2）不可行 -> 0
+  // 明牌约束：位置 1 左侧明牌黑3（rank 6），目标该位是黑9 → 猜黑1（rank 2）不可行 -> 0
   target.tiles[0] = { id: 6, color: 'b', number: 3, joker: false, revealed: true };
   const p2 = S.estimateGuessProbability(room, guesser, target, 1, 'b', 1);
   assert.strictEqual(p2, 0);
+  // 颜色公开：目标该位是黑9，猜白9 必然错误 -> 0
   const p3 = S.estimateGuessProbability(room, guesser, target, 1, 'w', 9);
-  assert.ok(p3 > 0, 'p3=' + p3);
+  assert.strictEqual(p3, 0);
+  // 猜黑9：可行黑牌 rank>=6 共 8 张 + 黑 Joker 1 张 → 1/9
+  const p4 = S.estimateGuessProbability(room, guesser, target, 1, 'b', 9);
+  assert.ok(Math.abs(p4 - 1 / 9) < 1e-9, 'p4=' + p4);
 });
 
 test('评分：范围与高低', () => {
@@ -122,4 +144,24 @@ test('猜牌概率：抽牌选择牌堆后颜色公开', () => {
   // 猜黑色可行（黑牌堆里剩余的黑数字牌 + 黑 Joker）
   const pBlack = S.estimateGuessProbability(room, guesser, target, 0, 'b', 5);
   assert.ok(pBlack > 0, 'pBlack=' + pBlack);
+});
+test('猜牌概率：可猜 Joker（横线），概率按公开信息估算', () => {
+  const room = { seats: [null, null, null, null], removed: new Set(), drawPile: [] };
+  const guesser = { index: 0, tiles: [{ id: 0, color: 'b', number: 0, joker: false, revealed: false, known: true }] };
+  const target = {
+    index: 1,
+    tiles: [
+      { id: 17, color: 'w', number: 5, joker: false, revealed: false },
+      { id: 9, color: 'b', number: 9, joker: false, revealed: false }
+    ]
+  };
+  room.seats[0] = guesser;
+  room.seats[1] = target;
+  // 颜色公开：目标第 0 张是白5 → 可行白牌 12 张 + 白 Joker 1 张 → P(横线) = 1/13
+  const p1 = S.estimateGuessProbability(room, guesser, target, 0, null, null, true);
+  assert.ok(Math.abs(p1 - 1 / 13) < 1e-9, 'p1=' + p1);
+  // 位置 1 左侧明牌黑3（rank 6），目标该位是黑9 → 可行黑牌 rank>=6 共 8 张 + 黑 Joker 1 张 → 1/9
+  target.tiles[0] = { id: 6, color: 'b', number: 3, joker: false, revealed: true };
+  const p2 = S.estimateGuessProbability(room, guesser, target, 1, null, null, true);
+  assert.ok(Math.abs(p2 - 1 / 9) < 1e-9, 'p2=' + p2);
 });
