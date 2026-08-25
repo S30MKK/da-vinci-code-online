@@ -444,6 +444,20 @@ function renderOwnRow(row, me) {
 function renderActionArea() {
   const area = $('action-area');
   area.innerHTML = '';
+  // 事件委托：操作区按钮绑定在容器上，任何 innerHTML 重建都不会丢事件
+  if (!area.dataset.actions) {
+    area.dataset.actions = '1';
+    area.addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
+      if (!btn) return;
+      const a = btn.dataset.action;
+      if (a === 'draw-b') send({ type: 'draw', pile: 'b' });
+      else if (a === 'draw-w') send({ type: 'draw', pile: 'w' });
+      else if (a === 'continue_guess') send({ type: 'continue_guess' });
+      else if (a === 'stop_turn') send({ type: 'stop_turn' });
+      else if (a === 'adjust_joker') openJokerAdjust();
+    });
+  }
   const st = App.state;
   if (st.phase === 'arranging') {
     area.innerHTML = '<div class="hint">正在排列手牌…</div>';
@@ -466,8 +480,8 @@ function renderActionArea() {
     case 'draw':
       area.innerHTML =
         '<div class="draw-choice">' +
-        `<button class="btn draw-tile draw-b" id="btn-draw-b"><span class="draw-tile-label">抽黑牌</span><span class="draw-tile-count">剩 ${st.blackPileSize || 0}</span></button>` +
-        `<button class="btn draw-tile draw-w" id="btn-draw-w"><span class="draw-tile-label">抽白牌</span><span class="draw-tile-count">剩 ${st.whitePileSize || 0}</span></button>` +
+        `<button class="btn draw-tile draw-b" id="btn-draw-b" data-action="draw-b"><span class="draw-tile-label">抽黑牌</span><span class="draw-tile-count">剩 ${st.blackPileSize || 0}</span></button>` +
+        `<button class="btn draw-tile draw-w" id="btn-draw-w" data-action="draw-w"><span class="draw-tile-label">抽白牌</span><span class="draw-tile-count">剩 ${st.whitePileSize || 0}</span></button>` +
         '</div>';
       $('btn-draw-b').disabled = (st.blackPileSize || 0) <= 0;
       $('btn-draw-w').disabled = (st.whitePileSize || 0) <= 0;
@@ -489,8 +503,8 @@ function renderActionArea() {
     case 'continue':
       area.innerHTML = '<div class="hint">猜中了！可继续猜牌，或停手结束回合。</div>' +
         '<div class="row" style="justify-content:center;margin-top:10px">' +
-        '<button class="btn primary" id="btn-continue-guess">继续猜</button>' +
-        '<button class="btn ghost" id="btn-stop-turn">停手</button>' +
+        '<button class="btn primary" id="btn-continue-guess" data-action="continue_guess">继续猜</button>' +
+        '<button class="btn ghost" id="btn-stop-turn" data-action="stop_turn">停手</button>' +
         '</div>';
       $('btn-continue-guess').onclick = () => send({ type: 'continue_guess' });
       $('btn-stop-turn').onclick = () => send({ type: 'stop_turn' });
@@ -501,7 +515,7 @@ function renderActionArea() {
   // 自己的回合内可随时调整 Joker 位置
   const meSeat = st.seats[st.you.seat];
   if (meSeat && meSeat.tiles.some(t => t.joker && !t.revealed)) {
-    const btn = '<div class="row" style="justify-content:center;margin-bottom:8px"><button class="btn small ghost" id="btn-adjust-joker">⇄ 调整 Joker</button></div>';
+    const btn = '<div class="row" style="justify-content:center;margin-bottom:8px"><button class="btn small ghost" id="btn-adjust-joker" data-action="adjust_joker">⇄ 调整 Joker</button></div>';
     area.insertAdjacentHTML('afterbegin', btn);
     $('btn-adjust-joker').onclick = () => openJokerAdjust();
   }
