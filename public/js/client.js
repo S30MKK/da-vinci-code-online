@@ -850,6 +850,12 @@ function uploadStatsBackup(file) {
   };
   reader.readAsText(file);
 }
+function avgRecent(recent, key) {
+  const arr = (recent || []).filter((r) => typeof r[key] === 'number');
+  if (arr.length === 0) return '-';
+  return Math.round(arr.reduce((s, r) => s + r[key], 0) / arr.length);
+}
+
 function renderStats() {
   const panel = $('lobby-stats');
   if (!App.nickname) {
@@ -873,7 +879,9 @@ function renderStats() {
     ['胜率', Math.round(s.winRate * 100) + '%'],
     ['当前连胜', s.currentStreak],
     ['最长连胜', s.bestStreak],
-    ['积分', s.rating]
+    ['积分', s.rating],
+    ['平均技术', avgRecent(s.recent, 'skill')],
+    ['平均运气', avgRecent(s.recent, 'luck')]
   ];
   $('stats-grid').innerHTML = cells.map(c => `<div class="stat-cell"><b>${c[1]}</b><span>${c[0]}</span></div>`).join('');
   const chart = $('stats-chart');
@@ -974,7 +982,8 @@ function showStatsModal(nickname, stats) {
   const cells = [
     ['总局数', s.games], ['胜 / 负', s.wins + ' / ' + s.losses],
     ['胜率', Math.round((s.winRate || 0) * 100) + '%'],
-    ['当前连胜', s.currentStreak], ['最长连胜', s.bestStreak], ['积分', s.rating]
+    ['当前连胜', s.currentStreak], ['最长连胜', s.bestStreak], ['积分', s.rating],
+    ['平均技术', avgRecent(s.recent, 'skill')], ['平均运气', avgRecent(s.recent, 'luck')]
   ];
   const grid = '<div class="stat-grid">' + cells.map((c) => '<div class="stat-cell"><b>' + c[1] + '</b><span>' + c[0] + '</span></div>').join('') + '</div>';
   openModal(
