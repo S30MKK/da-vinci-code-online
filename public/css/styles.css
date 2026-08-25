@@ -77,7 +77,8 @@ input:focus { outline: 2px solid #4fc3a1; border-color: transparent; }
   background: #1e2a38; border: 1px solid #2e4054; border-radius: 12px;
   padding: 8px 12px; margin-bottom: 12px; flex-wrap: wrap;
 }
-.room-code { color: #cfe3f5; font-size: 16px; }
+.room-code { color: #cfe3f5; font-size: 16px; cursor: pointer; user-select: none; }
+.room-code:hover b { color: #a8e6cf; text-decoration: underline; }
 .room-code b { color: #7fd4b8; letter-spacing: 2px; font-size: 20px; }
 .turn-banner { font-size: 15px; color: #ffd479; font-weight: 600; }
 

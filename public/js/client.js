@@ -38,6 +38,42 @@ function showToast(text, ms) {
   root.appendChild(el);
   setTimeout(() => el.remove(), ms || 2600);
 }
+/* ===================== 复制 ===================== */
+function copyText(text) {
+  return new Promise((resolve) => {
+    const ok = (v) => resolve(!!v);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => ok(true), () => ok(fallbackCopy(text)));
+    } else {
+      ok(fallbackCopy(text));
+    }
+  });
+}
+function fallbackCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+function copyRoomCode() {
+  const code = (App.state && App.state.code) || ($('room-code').textContent.trim());
+  if (!code) return;
+  copyText(code).then((ok) => {
+    showToast(ok ? '房间码已复制：' + code : '复制失败，房间码：' + code, ok ? 2200 : 4000);
+  });
+}
 function openModal(html, opts = {}) {
   const root = $('modal-root');
   root.innerHTML = '';
@@ -948,7 +984,8 @@ function showInviteModal(from, code) {
   openModal(
     '<h3>🎮 游戏邀请</h3>' +
     '<p class="hint" style="margin:10px 0">' + esc(from) + ' 邀请你加入房间</p>' +
-    '<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:6px 0 14px">' + esc(code) + '</p>' +
+    '<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:6px 0 10px">' + esc(code) + '</p>' +
+    '<div class="row" style="justify-content:center;margin-bottom:8px"><button class="btn small ghost" id="btn-invite-copy">📋 复制房间码</button></div>' +
     '<div class="row" style="justify-content:center">' +
     '<button class="btn primary" id="btn-invite-accept">接受</button>' +
     '<button class="btn ghost" id="btn-invite-decline">拒绝</button>' +
@@ -962,6 +999,9 @@ function showInviteModal(from, code) {
   $('btn-invite-decline').onclick = () => {
     send({ type: 'invite_response', from, code, accept: false });
     closeModal();
+  };
+  $('btn-invite-copy').onclick = () => {
+    copyText(code).then((ok) => showToast(ok ? '房间码已复制：' + code : '复制失败，房间码：' + code));
   };
 }
 /* ===================== 回放 ===================== */
@@ -1184,14 +1224,9 @@ function init() {
     App.results = null;
     showView('lobby');
   };
-  $('btn-copy-code').onclick = () => {
-    const code = $('room-code').textContent;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(code).then(() => showToast('房间码已复制：' + code));
-    } else {
-      showToast('房间码：' + code);
-    }
-  };
+  $('btn-copy-code').onclick = () => copyRoomCode();
+  $('room-code').addEventListener('click', () => copyRoomCode());
+  $('game-room-code').addEventListener('click', () => copyRoomCode());
   $('btn-add-bot').onclick = () => send({ type: 'add_bot' });
   $('btn-start').onclick = () => send({ type: 'start_game' });
   $('btn-view-all').onclick = () => send({ type: 'set_spectator_view', view: 'all' });
