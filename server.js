@@ -355,6 +355,8 @@ function createRoom() {
     phase: 'lobby',            // lobby | arranging | playing | ended
     spectatorView: 'all',      // all | public
     drawPile: [],
+    blackPile: [],
+    whitePile: [],
     removed: new Set(),        // 被猜中移出游戏的牌 id
     currentTurn: null,
     pendingAction: 'wait',     // arrange | draw | place | guess | reveal | wait
@@ -409,14 +411,17 @@ function stateFor(room, client) {
       eliminated: s.eliminated,
       isHost: room.hostSeat === idx,
       tiles: s.tiles.map(t => {
-        const visible = t.revealed || (isSelf && t.known) || seeAll;
+        const colorVisible = t.revealed || (isSelf && (t.known || t.pile)) || seeAll;
+        const valueVisible = t.revealed || (isSelf && t.known) || seeAll;
         return {
           id: t.id,
           revealed: !!t.revealed,
           hidden: !t.revealed,
-          color: visible ? t.color : null,
-          number: visible ? t.number : null,
-          joker: visible ? !!t.joker : false
+          color: colorVisible ? t.color : null,
+          number: valueVisible ? t.number : null,
+          joker: valueVisible ? !!t.joker : false,
+          knownToOwner: !!t.known,
+          pile: t.pile || null
         };
       })
     };
@@ -430,7 +435,9 @@ function stateFor(room, client) {
     pendingAction: room.pendingAction,
     spectatorView: room.spectatorView,
     you: seat ? { isSpectator: false, seat: seat.index } : { isSpectator: true },
-    drawPileSize: room.drawPile.length,
+    drawPileSize: (room.blackPile ? room.blackPile.length : 0) + (room.whitePile ? room.whitePile.length : 0),
+    blackPileSize: room.blackPile ? room.blackPile.length : 0,
+    whitePileSize: room.whitePile ? room.whitePile.length : 0,
     winner: room.winner,
     gameId: room.gameId,
     spectatorCount: room.spectators.size,
@@ -458,7 +465,10 @@ function startGame(room) {
     seat.eliminated = false;
     seat.stats = freshSeatStats();
   }
-  room.drawPile = deck.slice(i);
+  const rest = deck.slice(i);
+  room.blackPile = rest.filter(t => t.color === 'b');
+  room.whitePile = rest.filter(t => t.color === 'w');
+  room.drawPile = rest;
   room.removed = new Set();
   room.phase = 'arranging';
   room.currentTurn = null;
@@ -553,7 +563,7 @@ function nextTurn(room) {
   if (!seat) return;
   room.pendingDraw = null;
   room.pendingGuess = null;
-  room.pendingAction = room.drawPile.length > 0 ? 'draw' : 'guess';
+  room.pendingAction = (room.blackPile.length + room.whitePile.length) > 0 ? 'draw' : 'guess';
   if (seat.isBot) {
     scheduleBot(room, seat);
   } else {
@@ -584,17 +594,18 @@ function checkEliminations(room) {
 
 /* ---------------- 抽牌 / 放置 / 猜牌 / 翻牌 ---------------- */
 
-function handleDraw(client, room) {
+function handleDraw(client, room, msg) {
   const seat = seatOf(client);
   if (!seat || room.phase !== 'playing' || room.currentTurn !== seat.index || room.pendingAction !== 'draw') return;
-  if (room.drawPile.length === 0) return;
-  const tile = room.drawPile.pop();
+  const pile = msg && msg.pile === 'b' ? 'blackPile' : (msg && msg.pile === 'w' ? 'whitePile' : null);
+  if (!pile || room[pile].length === 0) return;
+  const tile = room[pile].pop();
   seat.stats.draws.push(tile);
-  room.pendingDraw = { ...tile, revealed: false, known: false };
+  room.pendingDraw = { ...tile, revealed: false, known: false, pile: pile === 'blackPile' ? 'b' : 'w' };
   room.pendingAction = 'place';
   room.events.push({
-    type: 'draw', seat: seat.index, tileId: tile.id,
-    color: tile.color, number: tile.number, joker: tile.joker
+    type: 'draw', seat: seat.index, pile: pile === 'blackPile' ? 'b' : 'w',
+    tileId: tile.id, color: tile.color, number: tile.number, joker: tile.joker
   });
   room.lastActiveAt = Date.now();
   broadcastState(room);
@@ -717,9 +728,13 @@ function rowBounds(seat, pos) {
 }
 
 function estimateGuessProbability(room, guesser, target, pos, color, number) {
+  const guessedTile = target.tiles[pos];
+  // 抽牌时选择过牌堆：该牌颜色公开，猜其它颜色必然错误
+  const restrictedColor = guessedTile && guessedTile.pile ? guessedTile.pile : null;
+  if (restrictedColor && color !== restrictedColor) return 0;
   const pool = poolFor(room, guesser);
-  const nonJokers = pool.filter(t => !t.joker);
-  const jokers = pool.length - nonJokers.length;
+  const nonJokers = pool.filter(t => !t.joker && (restrictedColor ? t.color === restrictedColor : true));
+  const jokers = pool.filter(t => t.joker && (restrictedColor ? t.color === restrictedColor : true)).length;
   const { lo, hi } = rowBounds(target, pos);
   const targetRank = color === 'b' ? number * 2 : number * 2 + 1;
   const feasible = nonJokers.filter(c => tileRank(c) >= lo && tileRank(c) <= hi);
@@ -747,14 +762,18 @@ function scheduleBot(room, seat) {
 }
 
 function botDraw(room, seat) {
-  if (room.pendingAction !== 'draw' || room.drawPile.length === 0) return;
-  handleDraw({ room, seatIndex: seat.index }, room);
+  if (room.pendingAction !== 'draw') return;
+  // 白牌数值更高，优先抽白牌堆；白牌堆空则抽黑牌堆
+  const pile = room.whitePile.length > 0 ? 'w' : 'b';
+  if (pile === 'w' ? room.whitePile.length === 0 : room.blackPile.length === 0) return;
+  handleDraw({ room, seatIndex: seat.index }, room, { pile });
 }
 
 function botPlace(room, seat) {
   const len = seat.tiles.length;
   const pool = poolFor(room, seat);
-  const nonJokers = pool.filter(t => !t.joker);
+  const drawnPile = room.pendingDraw ? room.pendingDraw.pile : null;
+  const nonJokers = pool.filter(t => !t.joker && (drawnPile ? t.color === drawnPile : true));
   let best = -1;
   let bestPos = Math.floor(len / 2);
   for (let p = 0; p <= len; p++) {
@@ -1169,7 +1188,7 @@ function routeMessage(client, msg) {
     case 'start_game': return room ? handleStartGame(client, room) : null;
     case 'set_spectator_view': return room ? handleSetSpectatorView(client, room, msg) : null;
     case 'arrange_done': return room ? handleArrange(client, room, msg) : null;
-    case 'draw': return room ? handleDraw(client, room) : null;
+    case 'draw': return room ? handleDraw(client, room, msg) : null;
     case 'place_drawn': return room ? handlePlace(client, room, msg) : null;
     case 'guess': return room ? handleGuess(client, room, msg) : null;
     case 'reveal_own': return room ? handleRevealOwn(client, room, msg) : null;

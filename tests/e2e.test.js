@@ -22,7 +22,8 @@ after(async () => {
   if (server) await server.close();
 });
 
-function makeDriver(client) {
+// 测试驱动：从服务端实际状态读取正确答案来猜牌，保证对局必然结束
+function makeDriver(client, code) {
   return async () => {
     let guard = 0;
     for (;;) {
@@ -33,13 +34,29 @@ function makeDriver(client) {
       if (st.phase === 'ended') return st;
       if (st.you.isSpectator || st.you.seat !== st.currentTurn) continue;
       if (st.pendingAction === 'draw') {
-        client.send({ type: 'draw' });
+        const pile = (st.blackPileSize || 0) > 0 ? 'b' : 'w';
+        client.send({ type: 'draw', pile });
       } else if (st.pendingAction === 'place') {
         client.send({ type: 'place_drawn', position: 0 });
       } else if (st.pendingAction === 'guess') {
-        const opp = st.seats.find((s) => s && !s.eliminated && s.index !== st.you.seat);
-        const pos = opp.tiles.findIndex((t) => !t.revealed);
-        client.send({ type: 'guess', target: opp.index, position: pos, color: 'b', number: 0 });
+        const room = S._rooms.get(st.code);
+        const seat = room.seats[st.you.seat];
+        // 优先猜一张非 Joker 的暗牌（必中）；若对手只剩 Joker，则随便猜（必然猜错）
+        let target = room.seats.find(
+          (s) => s && !s.eliminated && s.index !== seat.index &&
+            s.tiles.some((t) => !t.revealed && !t.joker)
+        );
+        if (target) {
+          const pos = target.tiles.findIndex((t) => !t.revealed && !t.joker);
+          const tile = target.tiles[pos];
+          client.send({ type: 'guess', target: target.index, position: pos, color: tile.color, number: tile.number });
+        } else {
+          target = room.seats.find(
+            (s) => s && !s.eliminated && s.index !== seat.index && s.tiles.some((t) => !t.revealed)
+          );
+          const pos = target.tiles.findIndex((t) => !t.revealed);
+          client.send({ type: 'guess', target: target.index, position: pos, color: 'b', number: 0 });
+        }
       } else if (st.pendingAction === 'reveal') {
         const me = st.seats[st.you.seat];
         const pos = me.tiles.findIndex((t) => !t.revealed);
@@ -76,7 +93,7 @@ test('端到端：建房/加入/聊天/完整对局/回放/战绩', { timeout: 9
     const st = await client.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
     const me = st.seats[st.you.seat];
     client.send({ type: 'arrange_done', positions: me.tiles.map((t) => t.id) });
-    return makeDriver(client)();
+    return makeDriver(client, code)();
   };
   const [ra, rb] = await Promise.all([play(a), play(b)]);
   assert.strictEqual(ra.phase, 'ended');
@@ -178,7 +195,7 @@ test('机器人：添加机器人后自动参与完整对局', { timeout: 120000
   const me = st.seats[st.you.seat];
   a.send({ type: 'arrange_done', positions: me.tiles.map((t) => t.id) });
 
-  const finalState = await makeDriver(a)();
+  const finalState = await makeDriver(a, code)();
   assert.strictEqual(finalState.phase, 'ended');
   a.close();
 });

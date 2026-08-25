@@ -104,3 +104,22 @@ test('积分增减：胜者加分、负者减分（同分对手）', () => {
   assert.ok(d[0] > 0, 'winner delta=' + d[0]);
   assert.ok(d[1] < 0, 'loser delta=' + d[1]);
 });
+test('猜牌概率：抽牌选择牌堆后颜色公开', () => {
+  const room = { seats: [null, null, null, null], removed: new Set(), drawPile: [] };
+  const guesser = { index: 0, tiles: [{ id: 0, color: 'b', number: 0, joker: false, revealed: false, known: true }] };
+  // 目标第 0 张是从黑牌堆抽的（颜色公开，数字未知）
+  const target = {
+    index: 1,
+    tiles: [
+      { id: 9, color: 'b', number: 5, joker: false, revealed: false, pile: 'b' }
+    ]
+  };
+  room.seats[0] = guesser;
+  room.seats[1] = target;
+  // 猜白色必然错误
+  const pWhite = S.estimateGuessProbability(room, guesser, target, 0, 'w', 5);
+  assert.strictEqual(pWhite, 0);
+  // 猜黑色可行（黑牌堆里剩余的黑数字牌 + 黑 Joker）
+  const pBlack = S.estimateGuessProbability(room, guesser, target, 0, 'b', 5);
+  assert.ok(pBlack > 0, 'pBlack=' + pBlack);
+});

@@ -205,6 +205,10 @@ function tileEl(t, onClick) {
     div.classList.add(t.joker ? 'tile-joker' : (t.color === 'b' ? 'tile-b' : 'tile-w'));
     if (!t.joker) div.textContent = t.number;
     if (t.revealed) div.classList.add('tile-revealed');
+    else if (t.number == null && !t.joker) {
+      div.textContent = '?';
+      div.classList.add('tile-unknown');
+    }
     if (!t.revealed && t.knownToOwner) div.classList.add('tile-own');
   } else {
     div.classList.add('tile-down');
@@ -331,8 +335,13 @@ function renderActionArea() {
   }
   switch (st.pendingAction) {
     case 'draw':
-      area.innerHTML = '<button class="btn primary" id="btn-draw">抽一张牌</button>';
-      $('btn-draw').onclick = () => send({ type: 'draw' });
+      area.innerHTML =
+        `<button class="btn" id="btn-draw-b">抽黑牌（剩 ${st.blackPileSize || 0}）</button>` +
+        `<button class="btn primary" id="btn-draw-w">抽白牌（剩 ${st.whitePileSize || 0}）</button>`;
+      $('btn-draw-b').disabled = (st.blackPileSize || 0) <= 0;
+      $('btn-draw-w').disabled = (st.whitePileSize || 0) <= 0;
+      $('btn-draw-b').onclick = () => send({ type: 'draw', pile: 'b' });
+      $('btn-draw-w').onclick = () => send({ type: 'draw', pile: 'w' });
       break;
     case 'place':
       area.innerHTML = '<div class="hint">抽到了牌（背面）—— 选择放置位置</div>';
@@ -356,7 +365,7 @@ function turnBannerText(st) {
   if (st.you.isSpectator) return '观战中 · 轮到 ' + curName;
   if (st.you.seat === st.currentTurn) {
     const t = {
-      draw: '轮到你：抽一张牌',
+      draw: '轮到你：抽牌（选择黑牌堆或白牌堆）',
       place: '轮到你：放置抽到的牌',
       guess: '轮到你：猜牌',
       reveal: '轮到你：翻开自己的一张牌'

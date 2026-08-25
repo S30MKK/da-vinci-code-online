@@ -117,6 +117,7 @@ input:focus { outline: 2px solid #4fc3a1; border-color: transparent; }
 .tile-down { background: repeating-linear-gradient(45deg, #2c3e50 0 6px, #34495e 6px 12px); border: 2px solid #46596c; }
 .tile-down::after { content: ""; position: absolute; inset: 6px; border: 2px solid rgba(255,255,255,.12); border-radius: 4px; }
 .tile-revealed { outline: 3px solid #ffd479; }
+.tile-unknown { border-style: dashed; opacity: .92; }
 .tile-own { outline: 2px dashed rgba(79,195,161,.7); }
 .tile.clickable { cursor: pointer; }
 .tile.clickable:hover { transform: translateY(-4px); }
