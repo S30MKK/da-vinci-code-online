@@ -5,3 +5,6 @@ stats.json.tmp
 *.log
 
 .cdp-*
+
+server-run.log*
+

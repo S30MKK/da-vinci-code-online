@@ -45,6 +45,10 @@
       </div>
       <p class="hint">服务器重置后，用「上传恢复」把备份传回去即可找回战绩。</p>
     </div>
+    <div class="panel" id="lobby-online">
+      <h3>🟢 在线玩家 <button class="btn small ghost" id="btn-online-refresh" style="float:right;font-size:12px">刷新</button></h3>
+      <div id="online-list"><span class="hint">加载中…</span></div>
+    </div>
   </section>
 
   <!-- ======== 房间 ======== -->
@@ -61,6 +65,9 @@
         <div class="row" id="host-controls" hidden>
           <button class="btn" id="btn-add-bot">＋ 添加机器人</button>
           <button class="btn primary" id="btn-start">开始对局</button>
+        </div>
+        <div class="row" id="invite-row" hidden>
+          <button class="btn ghost" id="btn-invite-online">👥 邀请玩家</button>
         </div>
         <div class="row" id="spec-controls" hidden>
           <span class="label">观战视角：</span>

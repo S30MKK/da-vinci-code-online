@@ -464,3 +464,80 @@ test('战绩备份 API：下载与上传恢复', { timeout: 30000 }, async () =>
   const bad = await postStats({ hello: 'world' });
   assert.strictEqual(bad.status, 400);
 });
+
+test('在线玩家：列表可见、查战绩、邀请进房（接受/拒绝）', { timeout: 30000 }, async () => {
+  
+  const host = track(new WsTestClient(server.port));
+  const guest = track(new WsTestClient(server.port));
+  const spy = track(new WsTestClient(server.port));
+  await host.connect();
+  await guest.connect();
+  await spy.connect();
+
+  // 三人先绑定昵称（模拟在大厅）
+  host.send({ type: 'set_nickname', nickname: '邀请主' });
+  guest.send({ type: 'set_nickname', nickname: '邀请客' });
+  spy.send({ type: 'set_nickname', nickname: '邀请观' });
+  await new Promise((r) => setTimeout(r, 200));
+
+  // 在线列表应包含三人
+  
+  spy.send({ type: 'list_online' });
+  const ol = await spy.nextMessage((m) => m.type === 'online_list');
+  
+  const names = ol.players.map((p) => p.nickname);
+  assert.ok(names.includes('邀请主'), '列表应包含房主');
+  assert.ok(names.includes('邀请客'), '列表应包含乘客');
+  assert.ok(names.includes('邀请观'), '列表应包含间谍');
+
+  // 查询他人战绩（房主无战绩 → stats 为 null 或 0 局）
+  
+  spy.send({ type: 'get_stats', nickname: '邀请主' });
+  const st = await spy.nextMessage((m) => m.type === 'stats' && m.nickname === '邀请主');
+  
+  assert.ok(st.stats === null || st.stats.games === 0, '可查询他人战绩');
+
+  // 房主建房并邀请乘客
+  
+  host.send({ type: 'create_room', nickname: '邀请主' });
+  const roomState = await host.nextMessage((m) => m.type === 'state');
+  
+  const code = roomState.code;
+  
+  host.send({ type: 'invite_player', nickname: '邀请客', code });
+  const inv = await guest.nextMessage((m) => m.type === 'invite');
+  
+  assert.strictEqual(inv.from, '邀请主');
+  assert.strictEqual(inv.code, code);
+
+  // 乘客接受 → 加入房间
+  
+  guest.send({ type: 'invite_response', from: '邀请主', code, accept: true });
+  const gState = await guest.nextMessage((m) => m.type === 'state' && m.you.seat != null);
+  
+  assert.strictEqual(gState.code, code);
+  
+  const notice = await host.nextMessage((m) => m.type === 'notice' && m.text.includes('接受了邀请'));
+  
+  assert.ok(notice, '房主应收到接受通知');
+
+  // 等节流窗口（2s）后再邀请
+  await new Promise((r) => setTimeout(r, 2100));
+  // 房主再邀请间谍，间谍拒绝 → 房主收到拒绝通知
+  host.send({ type: 'invite_player', nickname: '邀请观', code });
+  const inv2 = await spy.nextMessage((m) => m.type === 'invite');
+  assert.strictEqual(inv2.code, code);
+  spy.send({ type: 'invite_response', from: '邀请主', code, accept: false });
+  const declined = await host.nextMessage((m) => m.type === 'notice' && m.text.includes('拒绝了你的邀请'));
+  assert.ok(declined, '房主应收到拒绝通知');
+
+  await new Promise((r) => setTimeout(r, 2100));
+  // 邀请不在线玩家 → 报错
+  host.send({ type: 'invite_player', nickname: '不存在的人', code });
+  const errMsg = await host.nextMessage((m) => m.type === 'error');
+  assert.ok(errMsg.message.includes('不在线'), '应提示对方不在线');
+
+  host.close();
+  guest.close();
+  spy.close();
+});

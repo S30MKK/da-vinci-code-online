@@ -13,6 +13,7 @@ const App = {
   selJoker: null,       // 选中要移动的 Joker id
   guess: null,          // { target, position, color, number }
   chatMsgs: [],
+  online: [],        // 在线玩家列表
   replay: null,         // 回放原始数据
   replaySnaps: null,
   replayLog: null,
@@ -100,7 +101,9 @@ function connect() {
   ws.onopen = () => {
     reportClientError('ws', 'connected');
     showToast('已连接服务器');
+    if (App.nickname) send({ type: 'set_nickname', nickname: App.nickname });
     if (App.nickname) send({ type: 'get_stats', nickname: App.nickname });
+    send({ type: 'list_online' });
   };
   ws.onmessage = (ev) => {
     let msg;
@@ -151,8 +154,20 @@ function handleMessageInner(msg) {
       if (App.view !== 'replay') render();
       break;
     case 'stats':
-      App.myStats = msg;
-      if (App.view === 'lobby') renderStats();
+      if (msg.nickname && msg.nickname !== App.nickname) {
+        showStatsModal(msg.nickname, msg.stats);
+      } else {
+        App.myStats = msg;
+        if (App.view === 'lobby') renderStats();
+      }
+      break;
+    case 'online_list':
+      App.online = msg.players || [];
+      if (App.view === 'lobby') renderOnline();
+      if (App.onlineModalOpen) renderOnlineModal();
+      break;
+    case 'invite':
+      showInviteModal(msg.from, msg.code);
       break;
     case 'notice':
       showToast(msg.text);
@@ -239,6 +254,7 @@ function renderRoom() {
     list.appendChild(item);
   });
   const isHost = st.you.seat === st.hostSeat;
+  $('invite-row').hidden = st.you.isSpectator || st.you.seat == null;
   $('host-controls').hidden = !isHost || st.phase !== 'lobby';
   $('spec-controls').hidden = !isHost;
   $('btn-view-all').classList.toggle('primary', st.spectatorView === 'all');
@@ -823,6 +839,131 @@ function renderStats() {
   }
 }
 
+
+/* ===================== 在线玩家（阉割好友系统） ===================== */
+function renderOnlineRows(box, list) {
+  if (!box) return;
+  box.innerHTML = '';
+  const rows = (list || []).slice();
+  if (rows.length === 0) {
+    box.innerHTML = '<span class="hint">暂时没有其他玩家在线</span>';
+    return;
+  }
+  for (const p of rows) {
+    const row = document.createElement('div');
+    row.className = 'online-row';
+    const isMe = p.nickname === App.nickname;
+    let status = '在大厅';
+    if (p.inRoom) {
+      if (p.seat == null) status = '观战中 ' + p.code;
+      else status = p.phase === 'lobby' ? '房间 ' + p.code : '对局中 ' + p.code;
+    }
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.innerHTML = esc(p.nickname) + (isMe ? ' <span class="tag">我</span>' : '') + '<span class="status">' + esc(status) + '</span>';
+    row.appendChild(name);
+    const btnStats = document.createElement('button');
+    btnStats.className = 'btn small ghost';
+    btnStats.textContent = '战绩';
+    btnStats.onclick = () => viewPlayerStats(p.nickname);
+    row.appendChild(btnStats);
+    if (!isMe) {
+      const btnInvite = document.createElement('button');
+      btnInvite.className = 'btn small';
+      btnInvite.textContent = '邀请';
+      btnInvite.onclick = () => invitePlayer(p.nickname);
+      row.appendChild(btnInvite);
+    }
+    box.appendChild(row);
+  }
+}
+
+function renderOnline() {
+  renderOnlineRows($('online-list'), App.online);
+}
+
+function openOnlineModal() {
+  openModal(
+    '<h3>🟢 在线玩家</h3>' +
+    '<div id="online-modal-list"></div>' +
+    '<div class="row" style="justify-content:center;margin-top:6px">' +
+    '<button class="btn small ghost" id="btn-online-modal-refresh">刷新</button>' +
+    '<button class="btn link" id="btn-online-modal-close">关闭</button>' +
+    '</div>'
+  );
+  $('btn-online-modal-refresh').onclick = () => send({ type: 'list_online' });
+  $('btn-online-modal-close').onclick = () => { App.onlineModalOpen = false; closeModal(); };
+  App.onlineModalOpen = true;
+  renderOnlineModal();
+  send({ type: 'list_online' });
+}
+
+function renderOnlineModal() {
+  renderOnlineRows($('online-modal-list'), App.online);
+}
+
+function viewPlayerStats(nick) {
+  if (!nick) return;
+  showToast('正在查询 ' + nick + ' 的战绩…');
+  send({ type: 'get_stats', nickname: nick });
+}
+
+function showStatsModal(nickname, stats) {
+  const s = stats;
+  if (!s) {
+    openModal(
+      '<h3>' + esc(nickname) + ' 的战绩</h3>' +
+      '<p class="hint">暂无战绩</p>' +
+      '<button class="btn link" onclick="closeModal()">关闭</button>'
+    );
+    return;
+  }
+  const cells = [
+    ['总局数', s.games], ['胜 / 负', s.wins + ' / ' + s.losses],
+    ['胜率', Math.round((s.winRate || 0) * 100) + '%'],
+    ['当前连胜', s.currentStreak], ['最长连胜', s.bestStreak], ['积分', s.rating]
+  ];
+  const grid = '<div class="stat-grid">' + cells.map((c) => '<div class="stat-cell"><b>' + c[1] + '</b><span>' + c[0] + '</span></div>').join('') + '</div>';
+  openModal(
+    '<h3>' + esc(nickname) + ' 的战绩</h3>' + grid +
+    '<button class="btn link" onclick="closeModal()">关闭</button>'
+  );
+}
+
+function invitePlayer(nick) {
+  if (!nick) return;
+  const st = App.state;
+  if (!st || st.phase !== 'lobby') {
+    showToast('请先创建或加入房间（大厅阶段）再邀请');
+    return;
+  }
+  if (st.you && st.you.isSpectator) {
+    showToast('观战中不能邀请，请先加入房间');
+    return;
+  }
+  send({ type: 'invite_player', nickname: nick, code: st.code });
+}
+
+function showInviteModal(from, code) {
+  openModal(
+    '<h3>🎮 游戏邀请</h3>' +
+    '<p class="hint" style="margin:10px 0">' + esc(from) + ' 邀请你加入房间</p>' +
+    '<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:6px 0 14px">' + esc(code) + '</p>' +
+    '<div class="row" style="justify-content:center">' +
+    '<button class="btn primary" id="btn-invite-accept">接受</button>' +
+    '<button class="btn ghost" id="btn-invite-decline">拒绝</button>' +
+    '</div>'
+  );
+  $('btn-invite-accept').onclick = () => {
+    send({ type: 'invite_response', from, code, accept: true });
+    closeModal();
+    showToast('已接受邀请');
+  };
+  $('btn-invite-decline').onclick = () => {
+    send({ type: 'invite_response', from, code, accept: false });
+    closeModal();
+  };
+}
 /* ===================== 回放 ===================== */
 function tileText(t) {
   if (!t) return '?';
@@ -984,7 +1125,10 @@ function init() {
   nick.addEventListener('input', () => {
     App.nickname = nick.value.trim().slice(0, 12);
     localStorage.setItem('dvc-nick', App.nickname);
+    if (App.nickname) send({ type: 'set_nickname', nickname: App.nickname });
     if (App.nickname) send({ type: 'get_stats', nickname: App.nickname });
+    send({ type: 'list_online' });
+    renderOnline();
   });
 
   $('btn-create').onclick = () => {
@@ -1024,6 +1168,8 @@ function init() {
     );
   };
 
+  $('btn-online-refresh').onclick = () => send({ type: 'list_online' });
+  $('btn-invite-online').onclick = () => openOnlineModal();
   $('btn-stats-download').onclick = () => downloadStatsBackup();
   $('btn-stats-upload').onclick = () => $('stats-file').click();
   $('stats-file').addEventListener('change', (e) => {
@@ -1079,6 +1225,7 @@ function init() {
   buildChat('room-chat');
   buildChat('game-chat');
   renderStats();
+  setInterval(() => { if (App.ws && App.ws.readyState === WebSocket.OPEN) send({ type: 'list_online' }); }, 5000);
   connect();
 }
 

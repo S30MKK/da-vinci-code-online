@@ -22,6 +22,8 @@ const STATS_FILE = process.env.STATS_FILE || path.join(ROOT, 'stats.json');
 
 const MAX_SEATS = 4;
 const RECONNECT_GRACE_MS = 90 * 1000;   // 断线保留座位时长
+const INVITE_TTL_MS = 30 * 1000;      // 邀请待处理有效期
+const pendingInvites = new Map();      // 被邀请昵称 -> { fromNick, fromClient, code, at }
 const BOT_DELAY_MS = 700;               // 机器人行动间隔
 const MAX_REPLAYS_PER_ROOM = 10;
 const MAX_REPLAYS_GLOBAL = 500;
@@ -1230,6 +1232,7 @@ function handleSpectate(client, msg) {
 }
 
 function leaveRoom(client) {
+  clearPendingInvitesFrom(client);
   const room = client.room;
   if (!room) return;
   if (client.spectator) {
@@ -1313,6 +1316,81 @@ function handleGetStats(client, msg) {
   const st = getPlayerStats(name);
   client.send({ type: 'stats', nickname: name, stats: st });
 }
+function onlinePlayersList() {
+  const list = [];
+  for (const c of clients) {
+    if (!c.alive || !c.nickname) continue;
+    const room = c.room;
+    list.push({
+      nickname: c.nickname,
+      inRoom: !!room,
+      code: room ? room.code : null,
+      phase: room ? room.phase : null,
+      seat: c.spectator ? null : c.seatIndex
+    });
+  }
+  list.sort((a, b) => (a.nickname < b.nickname ? -1 : a.nickname > b.nickname ? 1 : 0));
+  return list;
+}
+
+function handleListOnline(client) {
+  client.send({ type: 'online_list', players: onlinePlayersList() });
+}
+function handleSetNickname(client, msg) {
+  const nick = sanitizeNick(msg.nickname);
+  if (nick) client.nickname = nick;
+}
+
+function clearPendingInvitesFrom(client) {
+  for (const [target, p] of pendingInvites) {
+    if (p.fromClient === client) pendingInvites.delete(target);
+  }
+}
+
+function handleInvitePlayer(client, msg) {
+  if (!client.nickname) return err(client, '请先设置昵称');
+  const room = client.room;
+  if (!room) return err(client, '请先创建或加入房间');
+  if (room.phase !== 'lobby') return err(client, '对局已开始，无法邀请加入');
+  const target = sanitizeNick(msg.nickname);
+  if (!target) return err(client, '无效的玩家昵称');
+  if (target === client.nickname) return err(client, '不能邀请自己');
+  if (Date.now() - (client.lastInviteAt || 0) < 2000) return err(client, '操作太快，请稍后再试');
+  client.lastInviteAt = Date.now();
+  const targetClient = [...clients].find((c) => c.alive && c.nickname === target);
+  if (!targetClient) return err(client, `${target} 不在线`);
+  if (targetClient.room === room) return err(client, `${target} 已在本房间`);
+  if (pendingInvites.has(target)) return err(client, `${target} 已有待处理的邀请`);
+  pendingInvites.set(target, { fromNick: client.nickname, fromClient: client, code: room.code, at: Date.now() });
+  targetClient.send({ type: 'invite', from: client.nickname, code: room.code });
+}
+
+function handleInviteResponse(client, msg) {
+  if (!client.nickname) return;
+  const pending = pendingInvites.get(client.nickname);
+  if (!pending) return err(client, '没有待处理的邀请');
+  pendingInvites.delete(client.nickname);
+  const inviter = pending.fromClient;
+  const room = rooms.get(pending.code);
+  const notifyInviter = (text) => {
+    if (inviter && inviter.alive) inviter.send({ type: 'notice', text });
+  };
+  if (msg.accept !== true) {
+    notifyInviter(`${client.nickname} 拒绝了你的邀请`);
+    return;
+  }
+  if (!room) { notifyInviter(`${client.nickname} 接受了邀请，但房间已关闭`); return err(client, '房间已关闭'); }
+  if (room.phase !== 'lobby') { notifyInviter(`${client.nickname} 接受了邀请，但对局已开始`); return err(client, '对局已开始，无法加入'); }
+  if (room.seats.some((s) => s && s.nickname === client.nickname)) return err(client, '该昵称已在房间中');
+  if (client.room) leaveRoom(client);
+  const idx = room.seats.findIndex((s) => s === null);
+  if (idx === -1) return err(client, '房间已满');
+  room.seats[idx] = makeSeat(idx, client.nickname, false);
+  if (room.hostSeat == null) room.hostSeat = idx;
+  bindSeat(client, room, room.seats[idx]);
+  broadcastNotice(room, `${client.nickname} 接受了邀请，加入了房间`);
+  notifyInviter(`${client.nickname} 接受了邀请，加入了房间`);
+}
 
 function handleGetReplays(client, room) {
   client.send({ type: 'replay_list', replays: room.replayList });
@@ -1333,6 +1411,10 @@ function routeMessage(client, msg) {
     case 'spectate_room': return handleSpectate(client, msg);
     case 'leave': return leaveRoom(client);
     case 'get_stats': return handleGetStats(client, msg);
+    case 'list_online': return handleListOnline(client);
+    case 'set_nickname': return handleSetNickname(client, msg);
+    case 'invite_player': return handleInvitePlayer(client, msg);
+    case 'invite_response': return handleInviteResponse(client, msg);
     case 'chat': return room ? handleChat(client, room, msg) : err(client, '请先进入房间');
     case 'get_replays': return room ? handleGetReplays(client, room) : null;
     case 'get_replay': return handleGetReplay(client, msg);
@@ -1358,6 +1440,8 @@ function routeMessage(client, msg) {
  * ------------------------------------------------------------------- */
 
 function onDisconnect(client) {
+  clearPendingInvitesFrom(client);
+  if (client.nickname) pendingInvites.delete(client.nickname);
   if (!client.room) return;
   const room = client.room;
   if (client.spectator) {
@@ -1383,6 +1467,10 @@ function onDisconnect(client) {
 
 function sweep() {
   const now = Date.now();
+  // 清理过期的待处理邀请
+  for (const [target, p] of pendingInvites) {
+    if (now - p.at > INVITE_TTL_MS) pendingInvites.delete(target);
+  }
   for (const room of rooms.values()) {
     for (const seat of room.seats) {
       if (!seat || seat.isBot || seat.connected) continue;
