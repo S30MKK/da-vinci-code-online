@@ -60,6 +60,10 @@ function canAct() {
 }
 
 /* ===================== WebSocket ===================== */
+window.addEventListener('error', (e) => {
+  console.error('全局异常:', e.message);
+  showToast('出现异常，请刷新页面重试');
+});
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   const ws = new WebSocket(proto + location.host);
@@ -93,6 +97,15 @@ function send(obj) {
 
 /* ===================== 消息处理 ===================== */
 function handleMessage(msg) {
+  try {
+    handleMessageInner(msg);
+  } catch (e) {
+    console.error('消息处理异常:', e);
+    showToast('出现异常，请刷新页面重试');
+  }
+}
+
+function handleMessageInner(msg) {
   switch (msg.type) {
     case 'state':
       if (App.state && App.state.gameId !== msg.gameId) {
@@ -149,12 +162,17 @@ function showView(name) {
 function render() {
   const st = App.state;
   if (!st) return;
-  if (st.phase === 'lobby') {
-    showView('room');
-    renderRoom();
-  } else {
-    showView('game');
-    renderGame();
+  try {
+    if (st.phase === 'lobby') {
+      showView('room');
+      renderRoom();
+    } else {
+      showView('game');
+      renderGame();
+    }
+  } catch (e) {
+    console.error('渲染异常:', e);
+    showToast('界面渲染出错，请刷新页面重试');
   }
 }
 

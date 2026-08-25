@@ -34,6 +34,7 @@ function makeHarness() {
     Date, JSON, Math, Promise, Object, Array, String, Number, Boolean, Error, RegExp, Map, Set
   };
   ctx.window = ctx;
+  ctx.addEventListener = () => {};
   vm.createContext(ctx);
   const code = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'client.js'), 'utf8');
   vm.runInContext(code, ctx, { filename: 'client.js' });
