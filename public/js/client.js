@@ -319,7 +319,8 @@ function tileEl(t, onClick) {
     else if (t.color === 'w') div.classList.add('tile-down-w');
     if (t.knownToOwner) div.classList.add('tile-own');
   } else if (t.color != null) {
-    div.classList.add(t.joker ? 'tile-joker' : (t.color === 'b' ? 'tile-b' : 'tile-w'));
+    if (t.joker) div.classList.add('tile-joker', t.color === 'b' ? 'tile-joker-b' : 'tile-joker-w');
+    else div.classList.add(t.color === 'b' ? 'tile-b' : 'tile-w');
     if (!t.joker) div.textContent = t.number;
     if (t.revealed) {
       div.classList.add('tile-revealed');
@@ -571,7 +572,8 @@ function renderArrangeModal() {
   html += '<p class="hint">Joker 是百搭牌，可以放在任意位置。点击 Joker 选中，再点下方位置移动。</p>';
   html += '<div class="tile-row" style="margin:12px 0">';
   order.forEach((t) => {
-    const cls = 'tile ' + (t.joker ? 'tile-joker' : (t.color === 'b' ? 'tile-b' : 'tile-w')) + (App.selJoker === t.id ? ' tile-revealed' : '');
+    const jcls = t.joker ? (t.color === 'b' ? 'tile-joker tile-joker-b' : 'tile-joker tile-joker-w') : (t.color === 'b' ? 'tile-b' : 'tile-w');
+    const cls = 'tile ' + jcls + (App.selJoker === t.id ? ' tile-revealed' : '');
     const click = t.joker ? ` onclick="selectJoker(${t.id})" style="cursor:pointer"` : '';
     const content = t.joker ? '' : esc(t.number);
     html += `<div class="${cls}"${click}>${content}</div>`;
@@ -640,9 +642,10 @@ function renderGuessModal() {
   const knownColor = tile && (tile.color === 'b' || tile.color === 'w') ? (tile.color === 'b' ? '黑' : '白') : null;
   let html = `<h3>猜 ${esc(target.nickname)} 的第 ${g.position + 1} 张牌</h3>`;
   html += '<div class="color-pick">';
-  html += `<button class="btn ${g.joker ? 'on' : ''}" onclick="setGuessJoker(true)" title="猜这张牌是 Joker（横线百搭牌）"><span class="joker-guess-mark"></span>Joker</button>`;
+  html += `<button class="btn ${g.joker ? 'on' : ''}" onclick="setGuessJoker(true)" title="猜这张牌是 Joker（横线百搭牌，黑/白颜色公开）"><span class="joker-guess-mark"></span>Joker</button>`;
   if (knownColor) {
-    html += `<span class="hint" style="align-self:center">这是一张<b>${knownColor}牌</b>（颜色公开）</span>`;
+    const isJokerTile = tile && tile.joker;
+    html += `<span class="hint" style="align-self:center">这是一张<b>${knownColor}${isJokerTile ? ' Joker' : '牌'}</b>${isJokerTile ? '（百搭）' : '（颜色公开）'}</span>`;
   } else {
     html += `<button class="btn ${!g.joker && g.color === 'b' ? 'on' : ''}" onclick="setGuessColor('b')">黑色</button>`;
     html += `<button class="btn ${!g.joker && g.color === 'w' ? 'on' : ''}" onclick="setGuessColor('w')">白色</button>`;
@@ -1021,7 +1024,7 @@ function showInviteModal(from, code) {
 /* ===================== 回放 ===================== */
 function tileText(t) {
   if (!t) return '?';
-  if (t.joker) return 'Joker';
+  if (t.joker) return (t.color === 'b' ? '黑' : '白') + 'Joker';
   return (t.color === 'b' ? '黑' : '白') + t.number;
 }
 

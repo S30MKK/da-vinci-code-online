@@ -119,11 +119,16 @@ input:focus { outline: 2px solid #4fc3a1; border-color: transparent; }
 }
 .tile-b { background: #1c1c1c; color: #fff; border: 2px solid #4a4a4a; }
 .tile-w { background: #f2f2f2; color: #141414; border: 2px solid #c9c9c9; }
-.tile-joker { background: #ececec; border: 2px solid #b9b9b9; }
+.tile-joker { border: 2px solid #b9b9b9; }
 .tile-joker::after {
   content: ""; display: block; width: 60%; height: 7px;
   background: #141414; border-radius: 3px;
 }
+/* Joker 也分黑/白底：黑 Joker 黑底浅横线，白 Joker 白底深横线 */
+.tile-joker-b { background: #1c1c1c; border-color: #4a4a4a; }
+.tile-joker-b::after { background: #f5f5f5; }
+.tile-joker-w { background: #f2f2f2; border-color: #c9c9c9; }
+.tile-joker-w::after { background: #141414; }
 .tile-down { background: #2c3e50; border: 2px solid #46596c; }
 .tile-down::after { content: ""; position: absolute; inset: 6px; border: 2px solid rgba(255,255,255,.12); border-radius: 4px; }
 /* 暗牌若颜色公开（从选定牌堆抽出）：背面直接显示黑/白 + 底部圆点标记 */

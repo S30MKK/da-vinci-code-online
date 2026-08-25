@@ -109,6 +109,7 @@ test('端到端：建房/加入/聊天/完整对局/回放/战绩', { timeout: 9
   assert.strictEqual(chatMsg.nickname, '阿甲');
 
   // 开始对局：双方各自确认排列后自动进入对局
+  S._rooms.get(code).firstTurn = 0; // 测试固定房主先手
   a.send({ type: 'start_game' });
   const play = async (client) => {
     const st = await client.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
@@ -155,6 +156,7 @@ test('断线重连：对局中掉线可凭昵称+房间码回到原座位', { ti
   const bState = await b.nextMessage((m) => m.type === 'state' && m.you.seat != null);
   const bSeat = bState.you.seat;
 
+  S._rooms.get(code).firstTurn = 0; // 测试固定房主先手
   a.send({ type: 'start_game' });
   const confirm = async (client) => {
     const st = await client.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
@@ -191,6 +193,7 @@ test('猜牌：可猜 Joker（横线），猜中即移除目标牌', { timeout: 
   const code = roomState.code;
   b.send({ type: 'join_room', nickname: '靶子', code });
   await b.nextMessage((m) => m.type === 'state' && m.you.seat != null);
+  S._rooms.get(code).firstTurn = 0; // 测试固定房主先手
   a.send({ type: 'start_game' });
   const confirm = async (client) => {
     const st = await client.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
@@ -240,6 +243,7 @@ test('回合内：摸牌自动入序、可随时调整 Joker 位置', { timeout:
   const code = roomState.code;
   b.send({ type: 'join_room', nickname: '乙', code });
   await b.nextMessage((m) => m.type === 'state' && m.you.seat != null);
+  S._rooms.get(code).firstTurn = 0; // 测试固定房主先手
   a.send({ type: 'start_game' });
   const confirm = async (client) => {
     const st = await client.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
@@ -283,6 +287,7 @@ test('猜错规则：翻开本回合新抽的牌；牌堆空则自选抛弃', { 
   const code = roomState.code;
   b.send({ type: 'join_room', nickname: '乙', code });
   await b.nextMessage((m) => m.type === 'state' && m.you.seat != null);
+  S._rooms.get(code).firstTurn = 0; // 测试固定房主先手
   a.send({ type: 'start_game' });
   const confirm = async (client) => {
     const st = await client.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
@@ -343,6 +348,7 @@ test('猜对后：可继续猜或停手', { timeout: 30000 }, async () => {
   const code = roomState.code;
   b.send({ type: 'join_room', nickname: '乙', code });
   await b.nextMessage((m) => m.type === 'state' && m.you.seat != null);
+  S._rooms.get(code).firstTurn = 0; // 测试固定房主先手
   a.send({ type: 'start_game' });
   const confirm = async (client) => {
     const st = await client.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
@@ -408,6 +414,7 @@ test('机器人：添加机器人后自动参与完整对局', { timeout: 120000
   a.send({ type: 'add_bot' });
   await a.nextMessage((m) => m.type === 'state' && m.seats.filter(Boolean).length === 2);
 
+  S._rooms.get(code).firstTurn = 0; // 测试固定房主先手
   a.send({ type: 'start_game' });
   const st = await a.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
   const me = st.seats[st.you.seat];
@@ -540,4 +547,78 @@ test('在线玩家：列表可见、查战绩、邀请进房（接受/拒绝）'
   host.close();
   guest.close();
   spy.close();
+});
+
+test('开局先手：每局随机，且先手在活跃玩家内', { timeout: 90000 }, async () => {
+  const a = track(new WsTestClient(server.port));
+  const b = track(new WsTestClient(server.port));
+  await a.connect();
+  await b.connect();
+  const seen = new Set();
+  let prevCode = null;
+  for (let i = 0; i < 10; i++) {
+    a.send({ type: 'create_room', nickname: '先手甲' });
+    // 跳过上一局离开时残留的旧房间 state
+    const roomState = await a.nextMessage((m) => m.type === 'state' && m.code !== prevCode);
+    const code = roomState.code;
+    prevCode = code;
+    b.send({ type: 'join_room', nickname: '先手乙', code });
+    await b.nextMessage((m) => m.type === 'state' && m.you.seat != null && m.code === code);
+    a.send({ type: 'start_game' }); // 不注入 firstTurn → 随机先手
+    const confirm = async (client) => {
+      const st = await client.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
+      client.send({ type: 'arrange_done', positions: validPositions(st.seats[st.you.seat].tiles) });
+    };
+    await Promise.all([confirm(a), confirm(b)]);
+    const st = await a.nextMessage((m) => m.type === 'state' && m.phase === 'playing');
+    assert.ok(st.currentTurn === 0 || st.currentTurn === 1, '先手应在活跃玩家座位内，实际=' + st.currentTurn);
+    seen.add(st.currentTurn);
+    a.send({ type: 'leave' });
+    b.send({ type: 'leave' });
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  assert.ok(seen.size >= 2, '10 局应出现不同的先手，实际=' + JSON.stringify([...seen]));
+  a.close();
+  b.close();
+});
+
+test('Joker 黑/白：对手仅见颜色、自己见横线标记（joker 字段）', { timeout: 30000 }, async () => {
+  const a = track(new WsTestClient(server.port));
+  const b = track(new WsTestClient(server.port));
+  await a.connect();
+  await b.connect();
+  a.send({ type: 'create_room', nickname: '看牌家' });
+  const roomState = await a.nextMessage((m) => m.type === 'state');
+  const code = roomState.code;
+  b.send({ type: 'join_room', nickname: '持牌家', code });
+  await b.nextMessage((m) => m.type === 'state' && m.you.seat != null);
+  S._rooms.get(code).firstTurn = 0; // 固定房主先手
+  a.send({ type: 'start_game' });
+  const confirm = async (client) => {
+    const st = await client.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
+    client.send({ type: 'arrange_done', positions: validPositions(st.seats[st.you.seat].tiles) });
+  };
+  await Promise.all([confirm(a), confirm(b)]);
+  await a.nextMessage((m) => m.type === 'state' && m.phase === 'playing');
+  // 把 b 一张暗牌改成黑 Joker
+  const room = S._rooms.get(code);
+  const target = room.seats[1];
+  const pos = target.tiles.findIndex((t) => !t.revealed);
+  target.tiles[pos].joker = true;
+  target.tiles[pos].number = null;
+  target.tiles[pos].color = 'b';
+  // a 抽牌触发一次广播
+  a.send({ type: 'draw', pile: (room.blackPile.length > 0 ? 'b' : 'w') });
+  // a 视角：对手牌只公开颜色，joker 标记隐藏
+  const stA = await a.nextMessage((m) => m.type === 'state' && m.phase === 'playing' && m.pendingAction === 'guess');
+  const tileA = stA.seats[1].tiles[pos];
+  assert.strictEqual(tileA.color, 'b', '对手可见黑 Joker 的颜色');
+  assert.strictEqual(tileA.joker, false, '对手看不到 Joker 标记');
+  // b 视角：自己的 Joker 带标记 + 颜色
+  const stB = await b.nextMessage((m) => m.type === 'state' && m.you.seat != null && m.pendingAction === 'guess');
+  const tileB = stB.seats[1].tiles[pos];
+  assert.strictEqual(tileB.joker, true, '自己能看到 Joker 标记');
+  assert.strictEqual(tileB.color, 'b', '自己能看到 Joker 颜色');
+  a.close();
+  b.close();
 });

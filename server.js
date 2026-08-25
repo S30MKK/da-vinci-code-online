@@ -364,6 +364,7 @@ function createRoom() {
     whitePile: [],
     removed: new Set(),        // 被猜中移出游戏的牌 id
     currentTurn: null,
+    firstTurn: null,           // 本局随机先手座位
     pendingAction: 'wait',     // arrange | draw | place | guess | reveal | wait
     pendingDraw: null,
     arrangementReady: [false, false, false, false],
@@ -478,6 +479,11 @@ function startGame(room) {
   room.removed = new Set();
   room.phase = 'arranging';
   room.currentTurn = null;
+  // 每局随机决定谁第一个抽牌
+  // 每局随机决定谁第一个抽牌（测试可预置 firstTurn 固定先手）
+  if (room.firstTurn == null) {
+    room.firstTurn = seats.length > 0 ? seats[Math.floor(Math.random() * seats.length)].index : 0;
+  }
   room.pendingAction = 'arrange';
   room.pendingDraw = null;
   room.winner = null;
@@ -515,7 +521,8 @@ function checkArrangement(room) {
     room.events.push({ type: 'arranged' });
     nextTurn(room);
     broadcastState(room);
-    broadcastNotice(room, '对局开始！');
+    const firstSeat = room.seats[room.firstTurn];
+    broadcastNotice(room, '对局开始！' + (firstSeat ? firstSeat.nickname + ' 先手' : ''));
   }
 }
 
@@ -556,7 +563,9 @@ function handleArrange(client, room, msg) {
 function nextTurn(room) {
   if (room.phase !== 'playing') return;
   const n = room.seats.length;
-  let idx = room.currentTurn == null ? -1 : room.currentTurn;
+  let idx = room.currentTurn == null
+    ? (room.firstTurn == null ? -1 : room.firstTurn - 1)
+    : room.currentTurn;
   for (let k = 1; k <= n; k++) {
     const cand = (idx + k) % n;
     const s = room.seats[cand];
@@ -728,6 +737,7 @@ function handleGuess(client, room, msg) {
   const guessedTile = target.tiles[pos];
   if (guessedTile.revealed) return;
 
+  // Joker 颜色在他人牌堆可见：猜 Joker 不分颜色，命中任意 Joker 即算中
   const correct = jokerGuess
     ? !!guessedTile.joker
     : !guessedTile.joker && guessedTile.color === msg.color && guessedTile.number === msg.number;
@@ -758,7 +768,7 @@ function handleGuess(client, room, msg) {
     room.lastActiveAt = Date.now();
     checkEliminations(room);
     const alive = room.seats.filter(s => s && !s.eliminated && s.tiles.some(t => !t.revealed));
-    const hitText = `${seat.nickname} 猜中了 ${target.nickname} 的${jokerGuess ? 'Joker' : (msg.color === 'b' ? '黑' : '白') + msg.number}！`;
+const hitText = `${seat.nickname} 猜中了 ${target.nickname} 的${jokerGuess ? 'Joker' : (msg.color === 'b' ? '黑' : '白') + msg.number}！`;
     if (alive.length <= 1) {
       room.pendingAction = 'wait';
       broadcastNotice(room, hitText);

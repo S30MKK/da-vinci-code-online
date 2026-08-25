@@ -12,6 +12,7 @@ test('牌堆：26 张，黑白 0-11 各 12，Joker 2', () => {
   assert.strictEqual(blacks.length, 12);
   assert.strictEqual(whites.length, 12);
   assert.strictEqual(jokers.length, 2);
+  assert.deepStrictEqual(jokers.map(t => t.color).sort(), ['b', 'w'], 'Joker 应一黑一白');
   assert.deepStrictEqual(blacks.map(t => t.number).sort((a, b) => a - b), [...Array(12).keys()]);
 });
 
