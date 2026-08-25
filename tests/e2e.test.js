@@ -2,6 +2,7 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 
@@ -180,4 +181,51 @@ test('机器人：添加机器人后自动参与完整对局', { timeout: 120000
   const finalState = await makeDriver(a)();
   assert.strictEqual(finalState.phase, 'ended');
   a.close();
+});
+test('战绩备份 API：下载与上传恢复', { timeout: 30000 }, async () => {
+  const getStats = () => new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: server.port, path: '/api/stats' }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+    }).on('error', reject);
+  });
+  const postStats = (body) => new Promise((resolve, reject) => {
+    const data = Buffer.from(JSON.stringify(body));
+    const req = http.request({
+      host: '127.0.0.1', port: server.port, path: '/api/stats', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': data.length }
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+
+  const before = JSON.parse((await getStats()).body);
+  assert.strictEqual(before.version, 1);
+
+  const fake = {
+    version: 1,
+    players: {
+      '备份侠': {
+        games: 9, wins: 7, losses: 2, winRate: 0.778,
+        currentStreak: 3, bestStreak: 5, rating: 1123,
+        recent: [{ at: 1, gameId: 'G', result: 'win', score: 80, skill: 85, luck: 60, ratingDelta: 10 }]
+      }
+    }
+  };
+  const up = await postStats(fake);
+  assert.strictEqual(up.status, 200);
+
+  const after = JSON.parse((await getStats()).body);
+  assert.strictEqual(after.players['备份侠'].rating, 1123);
+  assert.strictEqual(after.players['备份侠'].games, 9);
+  assert.strictEqual(after.players['备份侠'].recent.length, 1);
+
+  const bad = await postStats({ hello: 'world' });
+  assert.strictEqual(bad.status, 400);
 });

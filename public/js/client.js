@@ -119,6 +119,7 @@ function handleMessage(msg) {
     case 'game_over':
       App.results = msg;
       renderResults();
+      autoBackupStats();
       break;
     case 'replay_list':
       showReplayList(msg.replays);
@@ -595,6 +596,49 @@ function renderChat() {
 }
 
 /* ===================== 大厅战绩 ===================== */
+/* ===================== 战绩备份 ===================== */
+function autoBackupStats() {
+  // 每局结束后把最新战绩自动存到浏览器本地（静默）
+  fetch('/api/stats')
+    .then((r) => r.json())
+    .then((d) => localStorage.setItem('dvc-stats-backup', JSON.stringify(d)))
+    .catch(() => {});
+}
+function downloadStatsBackup() {
+  fetch('/api/stats')
+    .then((r) => r.json())
+    .then((d) => {
+      const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'dvc-stats-' + new Date().toISOString().slice(0, 10) + '.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      showToast('战绩备份已下载');
+    })
+    .catch(() => showToast('下载失败'));
+}
+function uploadStatsBackup(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    fetch('/api/stats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: reader.result
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.ok) {
+          showToast('战绩已恢复（' + d.players + ' 名玩家）');
+          if (App.nickname) send({ type: 'get_stats', nickname: App.nickname });
+        } else {
+          showToast('恢复失败：' + (d.error || '文件格式不正确'));
+        }
+      })
+      .catch(() => showToast('上传失败'));
+  };
+  reader.readAsText(file);
+}
 function renderStats() {
   const panel = $('lobby-stats');
   if (!App.nickname) {
@@ -835,6 +879,14 @@ function init() {
       '<button class="btn link" onclick="closeModal()">关闭</button>'
     );
   };
+
+  $('btn-stats-download').onclick = () => downloadStatsBackup();
+  $('btn-stats-upload').onclick = () => $('stats-file').click();
+  $('stats-file').addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) uploadStatsBackup(f);
+    e.target.value = '';
+  });
 
   $('btn-room-leave').onclick = () => {
     send({ type: 'leave' });

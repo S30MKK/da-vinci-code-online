@@ -54,6 +54,19 @@ node --test
 - 牌序：黑 0 < 白 0 < 黑 1 < 白 1 < … < 黑 11 < 白 11；Joker 是百搭，可放任意位置，被猜中算猜错
 - 所有牌都被翻开即出局，最后仍持有暗牌者获胜
 
+## 战绩备份（防止免费服务器重置丢失）
+
+服务器端 `stats.json` 是权威数据，免费实例重启/重建可能被清空。推荐备份方案：
+
+- 网页端：大厅战绩面板有「⬇ 下载战绩备份」和「⬆ 上传恢复」按钮；每局结束后浏览器还会自动在本地保存一份（localStorage）。
+- 电脑端脚本（零依赖）：在项目目录执行
+  ```bash
+  node tools/sync-stats.js pull https://你的域名    # 下载备份到 stats-backup.json
+  node tools/sync-stats.js push https://你的域名    # 把备份上传回服务器
+  ```
+- 建议用 Windows 任务计划（或 crontab）每 30 分钟自动执行一次 `pull`；服务器重置后用 `push` 一键恢复。
+- 也可把 `stats-backup.json` 同步到网盘/坚果云，多一层保障。
+
 ## 项目结构
 
 ```

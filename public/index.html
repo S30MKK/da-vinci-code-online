@@ -38,6 +38,12 @@
       <div class="stat-grid" id="stats-grid"></div>
       <h4>最近表现（综合分走势）</h4>
       <div id="stats-chart" class="chart"></div>
+      <div class="row" id="stats-backup-row">
+        <button class="btn small ghost" id="btn-stats-download">⬇ 下载战绩备份</button>
+        <button class="btn small ghost" id="btn-stats-upload">⬆ 上传恢复</button>
+        <input type="file" id="stats-file" accept=".json,application/json" hidden>
+      </div>
+      <p class="hint">服务器重置后，用「上传恢复」把备份传回去即可找回战绩。</p>
     </div>
   </section>
 

@@ -1303,9 +1303,82 @@ function handleFrame(client, f) {
 const sweepTimer = setInterval(sweep, SWEEP_INTERVAL_MS);
 if (sweepTimer.unref) sweepTimer.unref();
 
+/* ---------------------------------------------------------------------
+ * 战绩备份 API：GET 下载 / POST 恢复
+ * ------------------------------------------------------------------- */
+
+function handleStatsUpload(req, res) {
+  const chunks = [];
+  let size = 0;
+  req.on('data', (c) => {
+    size += c.length;
+    if (size > 5 * 1024 * 1024) {
+      req.destroy();
+      return;
+    }
+    chunks.push(c);
+  });
+  req.on('end', () => {
+    try {
+      const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (!data || data.version !== 1 || !data.players || typeof data.players !== 'object') {
+        throw new Error('文件格式不正确（需要 version:1 的 stats 文件）');
+      }
+      const clean = { version: 1, players: {} };
+      for (const [name, p] of Object.entries(data.players)) {
+        const nick = String(name || '').trim().slice(0, NICKNAME_MAX_LEN);
+        if (!nick || !p || typeof p !== 'object') continue;
+        clean.players[nick] = {
+          games: Math.max(0, Number(p.games) || 0),
+          wins: Math.max(0, Number(p.wins) || 0),
+          losses: Math.max(0, Number(p.losses) || 0),
+          winRate: Number(p.winRate) || 0,
+          currentStreak: Math.max(0, Number(p.currentStreak) || 0),
+          bestStreak: Math.max(0, Number(p.bestStreak) || 0),
+          rating: Number.isFinite(p.rating) ? p.rating : 1000,
+          recent: Array.isArray(p.recent)
+            ? p.recent.slice(0, MAX_RECENT_PER_PLAYER).map((r) => ({
+                at: Number(r.at) || 0,
+                gameId: String(r.gameId || ''),
+                result: r.result === 'win' ? 'win' : 'loss',
+                score: Math.round(Number(r.score) || 0),
+                skill: Math.round(Number(r.skill) || 0),
+                luck: Math.round(Number(r.luck) || 0),
+                ratingDelta: Math.round(Number(r.ratingDelta) || 0)
+              }))
+            : []
+        };
+      }
+      statsData = clean;
+      saveStats();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, players: Object.keys(clean.players).length }));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  });
+  req.on('error', () => {
+    try { res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' }); res.end('{}'); } catch (e) { /* ignore */ }
+  });
+}
 function startServer(opts = {}) {
   loadStats();
   const server = http.createServer((req, res) => {
+    const urlPath = (req.url || '/').split('?')[0];
+    if (urlPath === '/api/stats' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff'
+      });
+      res.end(JSON.stringify(statsData));
+      return;
+    }
+    if (urlPath === '/api/stats' && req.method === 'POST') {
+      handleStatsUpload(req, res);
+      return;
+    }
     if (req.method === 'GET' || req.method === 'HEAD') serveStatic(req, res);
     else {
       res.writeHead(405);
