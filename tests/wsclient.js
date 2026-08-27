@@ -53,6 +53,12 @@ class WsTestClient {
     }
     this.socket.write(Buffer.concat([header, mask, masked]));
   }
+  // 发送掩码的 close 帧（模拟浏览器正常关闭页面）
+  sendCloseFrame() {
+    if (!this.socket) return;
+    const mask = crypto.randomBytes(4);
+    this.socket.write(Buffer.concat([Buffer.from([0x88, 0x80]), mask]));
+  }
   _onData(chunk) {
     this.buffer = Buffer.concat([this.buffer, chunk]);
     for (;;) {

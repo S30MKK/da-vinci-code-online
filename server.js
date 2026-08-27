@@ -268,6 +268,9 @@ class Client {
     this.alive = false;
     try { this.socket.end(encodeFrame(0x8, Buffer.from('bye'))); } catch (e) { /* ignore */ }
     try { this.socket.destroy(); } catch (e) { /* ignore */ }
+    // 正常关闭（close 帧/解码错误）也要走掉线清理，否则座位会一直停留在"在线"
+    clients.delete(this);
+    onDisconnect(this);
   }
 }
 

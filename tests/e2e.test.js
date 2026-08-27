@@ -779,3 +779,37 @@ test('无人对局回收：真人全掉线且超时后，房间自动关闭', { 
   assert.ok(!S._rooms.has(code), '无人可操作的对局应被自动关闭');
   a.close();
 });
+
+
+test('关闭帧：浏览器正常关闭后座位立即转掉线，房间可回收', { timeout: 30000 }, async () => {
+  const a = track(new WsTestClient(server.port));
+  await a.connect();
+  a.send({ type: 'create_room', nickname: '关帧侠' });
+  const st0 = await a.nextMessage((m) => m.type === 'state');
+  const code = st0.code;
+  a.send({ type: 'add_bot' });
+  await a.nextMessage((m) => m.type === 'state' && m.seats.filter(Boolean).length === 2);
+  S._rooms.get(code).firstTurn = 0;
+  a.send({ type: 'start_game' });
+  const st = await a.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
+  const me = st.seats[st.you.seat];
+  a.send({ type: 'arrange_done', positions: validPositions(me.tiles) });
+  await a.nextMessage((m) => m.type === 'state' && m.phase === 'playing');
+
+  // 模拟浏览器关闭页面：发送 close 帧（服务端 handleFrame 0x8 -> client.close()）
+  a.sendCloseFrame();
+  await new Promise((r) => setTimeout(r, 200));
+
+  const room = S._rooms.get(code);
+  assert.ok(room, '房间在宽限期内保留');
+  const seat = room.seats[st.you.seat];
+  assert.strictEqual(seat.connected, false, '正常关闭后座位应立即转掉线');
+  assert.ok(seat.disconnectedAt, '应记录掉线时间');
+  assert.ok(![...S._clients].some((x) => x.nickname === '关帧侠'), '该连接应从在线连接集合移除');
+
+  // 超过宽限期后 sweep：无人对局自动关闭
+  seat.disconnectedAt = Date.now() - (90 * 1000 + 5000);
+  S._sweep();
+  assert.ok(!S._rooms.has(code), '无人可操作的对局应被自动关闭');
+  a.close();
+});
