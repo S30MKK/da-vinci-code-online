@@ -1580,7 +1580,10 @@ function sweep() {
   }
   for (const room of rooms.values()) {
     for (const seat of room.seats) {
-      if (!seat || seat.isBot || seat.connected) continue;
+      if (!seat || seat.isBot) continue;
+      const live = seat.connected && seat.client && seat.client.alive;
+      if (live) continue;
+      // 僵尸座位：connected 但客户端已死/丢失（旧版残留），无 disconnectedAt，立即按掉线处理
       if (!seat.disconnectedAt || now - seat.disconnectedAt <= RECONNECT_GRACE_MS) continue;
       if (room.phase === 'lobby' || room.phase === 'arranging' || room.phase === 'ended') {
         room.seats[seat.index] = null;
@@ -1600,7 +1603,7 @@ function sweep() {
     // 无人可操作的对局回收：
     // - 座位全空：保留一段观察期（便于回放访问）后关闭
     // - 还有座位但没有"在线的真人玩家"且无观战者：超过重连宽限期后关闭（机器人之间不继续空跑）
-    const hasConnectedHuman = room.seats.some(s => s && !s.isBot && s.connected);
+    const hasConnectedHuman = room.seats.some(s => s && !s.isBot && s.connected && s.client && s.client.alive);
     const anySpec = room.spectators.size > 0;
     const allSeatsEmpty = room.seats.every(s => s === null);
     if (!hasConnectedHuman && !anySpec) {

@@ -813,3 +813,31 @@ test('关闭帧：浏览器正常关闭后座位立即转掉线，房间可回�
   assert.ok(!S._rooms.has(code), '无人可操作的对局应被自动关闭');
   a.close();
 });
+
+
+test('僵尸座位：connected 但客户端已死的座位可被清理', { timeout: 30000 }, async () => {
+  const a = track(new WsTestClient(server.port));
+  await a.connect();
+  a.send({ type: 'create_room', nickname: '僵尸侠' });
+  const st0 = await a.nextMessage((m) => m.type === 'state');
+  const code = st0.code;
+  a.send({ type: 'add_bot' });
+  await a.nextMessage((m) => m.type === 'state' && m.seats.filter(Boolean).length === 2);
+  S._rooms.get(code).firstTurn = 0;
+  a.send({ type: 'start_game' });
+  const st = await a.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
+  const me = st.seats[st.you.seat];
+  a.send({ type: 'arrange_done', positions: validPositions(me.tiles) });
+  await a.nextMessage((m) => m.type === 'state' && m.phase === 'playing');
+
+  // 模拟旧版遗留的僵尸座位：connected=true 但客户端已死（client=null）
+  const room = S._rooms.get(code);
+  const seat = room.seats[st.you.seat];
+  seat.connected = true;
+  seat.client = null;
+  seat.disconnectedAt = null;
+
+  S._sweep();
+  assert.ok(!S._rooms.has(code), '僵尸座位所在的对局应被自动关闭');
+  a.close();
+});
