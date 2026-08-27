@@ -22,6 +22,8 @@ const STATS_FILE = process.env.STATS_FILE || path.join(ROOT, 'stats.json');
 
 const MAX_SEATS = 4;
 const RECONNECT_GRACE_MS = 90 * 1000;   // 断线保留座位时长
+const HEARTBEAT_INTERVAL_MS = 15000;    // 服务端 ping 间隔
+const HEARTBEAT_TIMEOUT_MS = 40000;     // 超过该时长无任何数据视为死连接（清理无人对局）
 const INVITE_TTL_MS = 30 * 1000;      // 邀请待处理有效期
 const pendingInvites = new Map();      // 被邀请昵称 -> { fromNick, fromClient, code, at }
 const BOT_DELAY_MS = 700;               // 机器人行动间隔
@@ -252,6 +254,7 @@ class Client {
     this.nickname = null;
     this.lastChatAt = 0;
     this.lastSeen = Date.now();
+    this.lastPing = Date.now();
     this.alive = true;
   }
   send(obj) {
@@ -1553,6 +1556,21 @@ function onDisconnect(client) {
 
 function sweep() {
   const now = Date.now();
+  // 心跳探测：向活跃连接发 ping；超过超时未收到任何数据视为死连接，立即清理
+  for (const c of clients) {
+    if (!c.alive) continue;
+    if (now - c.lastSeen > HEARTBEAT_TIMEOUT_MS) {
+      c.alive = false;
+      clients.delete(c);
+      try { c.socket.destroy(); } catch (e) { /* ignore */ }
+      onDisconnect(c);
+      continue;
+    }
+    if (now - c.lastPing >= HEARTBEAT_INTERVAL_MS) {
+      c.lastPing = now;
+      try { c.socket.write(encodeFrame(0x9, Buffer.alloc(0))); } catch (e) { /* ignore */ }
+    }
+  }
   // 清理过期的待处理邀请
   for (const [target, p] of pendingInvites) {
     if (now - p.at > INVITE_TTL_MS) pendingInvites.delete(target);
@@ -1576,11 +1594,22 @@ function sweep() {
         advanceAfterAction(room);
       }
     }
-    // 空房间回收（保留一段观察期，便于回放访问）
-    const anySeat = room.seats.some(s => s !== null);
+    // 无人可操作的对局回收：
+    // - 座位全空：保留一段观察期（便于回放访问）后关闭
+    // - 还有座位但没有"在线的真人玩家"且无观战者：超过重连宽限期后关闭（机器人之间不继续空跑）
+    const hasConnectedHuman = room.seats.some(s => s && !s.isBot && s.connected);
     const anySpec = room.spectators.size > 0;
-    if (!anySeat && !anySpec && now - room.lastActiveAt > EMPTY_ROOM_TTL_MS) {
-      closeRoom(room);
+    const allSeatsEmpty = room.seats.every(s => s === null);
+    if (!hasConnectedHuman && !anySpec) {
+      if (allSeatsEmpty) {
+        if (now - room.lastActiveAt > EMPTY_ROOM_TTL_MS) closeRoom(room);
+      } else {
+        const lastHumanLeave = room.seats.reduce((mx, s) => {
+          if (s && !s.isBot) return Math.max(mx, s.disconnectedAt || 0);
+          return mx;
+        }, 0);
+        if (now - lastHumanLeave > RECONNECT_GRACE_MS) closeRoom(room);
+      }
     }
   }
 }
@@ -1790,5 +1819,5 @@ module.exports = {
   makeDeck, compareTiles, tileRank, tileLabel,
   estimateGuessProbability, computeScoring, computeRatingDeltas,
   createRoom, makeSeat, startGame, endGame,
-  _rooms: rooms, _replays: replays, _sweep: sweep
+  _rooms: rooms, _replays: replays, _sweep: sweep, _clients: clients
 };

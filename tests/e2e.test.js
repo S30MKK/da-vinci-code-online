@@ -716,3 +716,66 @@ test('Joker 黑/白：对手仅见颜色、自己见横线标记（joker 字段�
   a.close();
   b.close();
 });
+
+
+test('心跳：长时间无数据的死连接被清理，座位转为掉线', { timeout: 30000 }, async () => {
+  const a = track(new WsTestClient(server.port));
+  await a.connect();
+  a.send({ type: 'create_room', nickname: '心跳侠' });
+  const st0 = await a.nextMessage((m) => m.type === 'state');
+  const code = st0.code;
+  a.send({ type: 'add_bot' });
+  await a.nextMessage((m) => m.type === 'state' && m.seats.filter(Boolean).length === 2);
+  S._rooms.get(code).firstTurn = 0;
+  a.send({ type: 'start_game' });
+  const st = await a.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
+  const me = st.seats[st.you.seat];
+  a.send({ type: 'arrange_done', positions: validPositions(me.tiles) });
+  await a.nextMessage((m) => m.type === 'state' && m.phase === 'playing');
+
+  // 模拟"浏览器已关但服务端未收到 close"：把该连接 lastSeen 拨旧
+  const c = [...S._clients].find((x) => x.nickname === '心跳侠');
+  assert.ok(c, '可在服务端找到该连接');
+  c.lastSeen = Date.now() - 100000;
+
+  S._sweep();
+
+  assert.ok(!S._clients.has(c), '死连接应从在线连接集合移除');
+  const room = S._rooms.get(code);
+  assert.ok(room, '房间在重连宽限期内保留');
+  const seat = room.seats[st.you.seat];
+  assert.strictEqual(seat.connected, false, '座位应转为掉线');
+  assert.ok(seat.disconnectedAt, '应记录掉线时间');
+  a.close();
+});
+
+test('无人对局回收：真人全掉线且超时后，房间自动关闭', { timeout: 30000 }, async () => {
+  const a = track(new WsTestClient(server.port));
+  await a.connect();
+  a.send({ type: 'create_room', nickname: '空局侠' });
+  const st0 = await a.nextMessage((m) => m.type === 'state');
+  const code = st0.code;
+  a.send({ type: 'add_bot' });
+  await a.nextMessage((m) => m.type === 'state' && m.seats.filter(Boolean).length === 2);
+  S._rooms.get(code).firstTurn = 0;
+  a.send({ type: 'start_game' });
+  const st = await a.nextMessage((m) => m.type === 'state' && m.phase === 'arranging');
+  const me = st.seats[st.you.seat];
+  a.send({ type: 'arrange_done', positions: validPositions(me.tiles) });
+  await a.nextMessage((m) => m.type === 'state' && m.phase === 'playing');
+
+  // 模拟浏览器关闭且服务端未收到 close（置为死连接并跑 sweep）
+  const c = [...S._clients].find((x) => x.nickname === '空局侠');
+  c.lastSeen = Date.now() - 100000;
+  S._sweep();
+  const room = S._rooms.get(code);
+  assert.ok(room, '重连宽限期内房间仍保留');
+  const seat = room.seats[st.you.seat];
+  assert.strictEqual(seat.connected, false, '座位应转为掉线');
+
+  // 超过 90 秒宽限期后 sweep：判负出局并回收无人对局
+  seat.disconnectedAt = Date.now() - (90 * 1000 + 5000);
+  S._sweep();
+  assert.ok(!S._rooms.has(code), '无人可操作的对局应被自动关闭');
+  a.close();
+});
