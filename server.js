@@ -1392,9 +1392,18 @@ function handleGetStats(client, msg) {
   client.send({ type: 'stats', nickname: name, stats: st });
 }
 function onlinePlayersList() {
-  const list = [];
+  // 同名去重：同一昵称只显示一条（优先保留在房间里的连接，其次是最新活跃的连接）
+  const best = new Map();
   for (const c of clients) {
     if (!c.alive || !c.nickname) continue;
+    const prev = best.get(c.nickname);
+    if (!prev) { best.set(c.nickname, c); continue; }
+    const prevInRoom = !!prev.room;
+    const curInRoom = !!c.room;
+    if (curInRoom !== prevInRoom ? curInRoom : c.lastSeen > prev.lastSeen) best.set(c.nickname, c);
+  }
+  const list = [];
+  for (const c of best.values()) {
     const room = c.room;
     list.push({
       nickname: c.nickname,

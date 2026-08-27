@@ -610,6 +610,39 @@ test('在线玩家：列表可见、查战绩、邀请进房（接受/拒绝）'
   spy.close();
 });
 
+test('在线玩家：同一昵称多个连接只显示一条', { timeout: 30000 }, async () => {
+  const dupA = track(new WsTestClient(server.port));
+  const dupB = track(new WsTestClient(server.port));
+  const dupC = track(new WsTestClient(server.port));
+  await dupA.connect();
+  await dupB.connect();
+  await dupC.connect();
+
+  // 三个连接使用同一个昵称
+  dupA.send({ type: 'set_nickname', nickname: '重复名' });
+  dupB.send({ type: 'set_nickname', nickname: '重复名' });
+  dupC.send({ type: 'set_nickname', nickname: '重复名' });
+  await new Promise((r) => setTimeout(r, 200));
+
+  dupA.send({ type: 'list_online' });
+  const ol = await dupA.nextMessage((m) => m.type === 'online_list');
+  const count = ol.players.filter((p) => p.nickname === '重复名').length;
+  assert.strictEqual(count, 1, '同昵称应只显示一条，实际=' + count);
+
+  // 在房间里的连接应优先显示
+  dupA.send({ type: 'create_room', nickname: '重复名' });
+  await dupA.nextMessage((m) => m.type === 'state');
+  dupB.send({ type: 'list_online' });
+  const ol2 = await dupB.nextMessage((m) => m.type === 'online_list');
+  const entry = ol2.players.find((p) => p.nickname === '重复名');
+  assert.ok(entry, '去重后仍应显示该昵称');
+  assert.strictEqual(entry.inRoom, true, '应优先显示在房间内的连接');
+
+  dupA.close();
+  dupB.close();
+  dupC.close();
+});
+
 test('开局先手：每局随机，且先手在活跃玩家内', { timeout: 90000 }, async () => {
   const a = track(new WsTestClient(server.port));
   const b = track(new WsTestClient(server.port));
